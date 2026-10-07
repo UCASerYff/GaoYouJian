@@ -8,6 +8,8 @@ cleanup() {
     local native_test_suite
     IFS= read -r native_test_suite < "$TEST_TMP/native-suite.txt"
     if [[ "$native_test_suite" =~ ^GaoYouJian\.HiddenNativeTest\.[A-Fa-f0-9-]{36}$ ]]; then
+      # A failed assertion bypasses Swift defer cleanup. Remove the exact test domain from cfprefsd as well.
+      /usr/bin/defaults delete "$native_test_suite" >/dev/null 2>&1 || true
       # CFPreferences may flush an empty plist several seconds after the test process exits.
       # Keep removing only this run's UUID domain through that deferred flush window.
       for _ in {1..12}; do

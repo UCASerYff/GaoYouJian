@@ -7,13 +7,16 @@ struct MailFloatingRailView: View {
     var unreadCount: Int = 0
     var errorCount: Int = 0
 
-    private var color: Color { errorCount > 0 ? .orange : unreadCount > 0 ? .indigo : .secondary }
+    private var color: Color { Color(red: 0.72, green: 0.63, blue: 0.90) }
 
     var body: some View {
         Button(action: controller.expand) {
             Capsule(style: .continuous)
-                .fill(color.opacity(errorCount > 0 || unreadCount > 0 ? 0.9 : 0.55))
+                .fill(color.opacity(unreadCount > 0 ? 0.96 : 0.82))
                 .frame(width: MailFloatingController.railVisualSize.width, height: MailFloatingController.railVisualSize.height)
+                .overlay(alignment: .top) {
+                    if errorCount > 0 { Circle().fill(Color.orange).frame(width: 3, height: 3).padding(.top, 5) }
+                }
                 .frame(width: MailFloatingController.railHitSize.width, height: MailFloatingController.railHitSize.height, alignment: controller.isOnLeft ? .leading : .trailing)
                 .contentShape(Rectangle())
         }

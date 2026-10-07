@@ -30,6 +30,14 @@ extension MailFloatingController {
         defaults.set("right",forKey:"gaoyoujian.floating.edge")
         defaults.set(true,forKey:"gaoyoujian.floating.pinned")
         defaults.set(true,forKey:"gaoyoujian.floating.compact")
+        do {
+            defaults.set("left",forKey:"gaoyoujian.floating.edge")
+            defaults.set("legacy-display-test",forKey:"gaoyoujian.floating.display")
+            let legacy = MailFloatingController(store:MailStore(),defaults:defaults)
+            verify(legacy.dockMode == .left && legacy.isOnLeft && legacy.verticalRatio == 0.2 && legacy.rememberedDisplay == "legacy-display-test" && defaults.object(forKey:"gaoyoujian.floating.dockMode") == nil, "legacy edge, height and display migrate in memory without wiping prior preferences")
+            defaults.set("right",forKey:"gaoyoujian.floating.edge")
+            defaults.removeObject(forKey:"gaoyoujian.floating.display")
+        }
         let controller = MailFloatingController(store:MailStore(),defaults:defaults)
         controller.suppressPanelPresentationForTesting = true
         controller.restoreIfNeeded()
@@ -51,6 +59,7 @@ extension MailFloatingController {
             print("Hidden native framework: \(nativeChecks) checks passed; no window presentation or OS input injection")
         }
         let base = Date()
+        func closeFrame(_ a:NSRect,_ b:NSRect) -> Bool { abs(a.minX-b.minX) < 0.01 && abs(a.minY-b.minY) < 0.01 && abs(a.width-b.width) < 0.01 && abs(a.height-b.height) < 0.01 }
         let outside = NSPoint(x:screen.visibleFrame.minX-10,y:screen.visibleFrame.minY-10)
         func evaluate(_ point:NSPoint,_ seconds:Double) { controller.evaluatePointer(pointer:point,now:base.addingTimeInterval(seconds)) }
         func reveal(_ seconds:Double) {
@@ -147,17 +156,33 @@ extension MailFloatingController {
         panel.sendEvent(event(.leftMouseDown,at:secondGlobal))
         let beforeRatio = defaults.double(forKey:"gaoyoujian.floating.verticalRatio")
         let offset = NSSize(width:secondGlobal.x-dragInitial.minX,height:secondGlobal.y-dragInitial.minY)
-        let movedGlobal = NSPoint(x:screen.visibleFrame.minX+30+offset.width,y:screen.visibleFrame.minY+80+offset.height)
+        let middleX = screen.visibleFrame.minX + max(40,floor((screen.visibleFrame.width-dragInitial.width)*0.18))
+        let movedGlobal = NSPoint(x:middleX+offset.width,y:screen.visibleFrame.minY+80+offset.height)
         panel.sendEvent(event(.leftMouseDragged,at:movedGlobal))
         let wanted = draggingFrame(pointer:movedGlobal,grabOffset:offset,size:dragInitial.size,in:screen.visibleFrame)
-        verify(panel.frame == wanted && panel.isPressed && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == beforeRatio && defaults.string(forKey:"gaoyoujian.floating.edge") == "right", "native drag follows original offset and never persists before release")
+        verify(closeFrame(panel.frame,wanted) && panel.isPressed && controller.dockMode == .free && !controller.isOnLeft && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == beforeRatio && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "right", "native expanded drag crosses midpoint without changing direction or persisting before release")
         panel.sendEvent(event(.leftMouseUp,at:movedGlobal))
-        verify(!panel.isPressed && controller.isOnLeft && panel.frame.minX == screen.visibleFrame.minX && defaults.string(forKey:"gaoyoujian.floating.edge") == "left" && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") != beforeRatio, "native release snaps and persists destination")
+        verify(!panel.isPressed && !controller.isOnLeft && closeFrame(panel.frame,wanted) && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "free" && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") != beforeRatio, "mid-screen release preserves actual expanded position and persists a free anchor")
         let saved = panel.frame
+        let savedHorizontal = controller.horizontalRatio, savedVertical = controller.verticalRatio
+        let freeRail = Self.placementFrame(size:railHitSize,in:screen.visibleFrame,dock:.free,isLeft:false,horizontalRatio:savedHorizontal,verticalRatio:savedVertical)
+        controller.collapse(pointer:outside,now:base.addingTimeInterval(109))
+        verify(closeFrame(panel.frame,freeRail) && panel.frame.minX > screen.visibleFrame.minX && panel.frame.maxX < screen.visibleFrame.maxX, "free expanded collapse returns the rail to its saved side/top anchor away from screen edges")
+        do {
+            let restored = MailFloatingController(store:MailStore(),defaults:defaults)
+            restored.suppressPanelPresentationForTesting = true
+            restored.restoreIfNeeded()
+            let restoredPanel = restored.ensurePanel()
+            restored.revealRequiresExit = false
+            restored.expand(pointer:outside,now:base)
+            verify(restored.dockMode == .free && !restored.isOnLeft && closeFrame(restoredPanel.frame,saved) && !restoredPanel.isVisible, "relaunch restores the free expanded anchor and direction from real isolated preferences")
+            restored.hide(); restoredPanel.delegate = nil; restoredPanel.contentView = nil; restoredPanel.close()
+        }
         controller.collapse(pointer:outside,now:base.addingTimeInterval(110)); reveal(111)
         let controlPoint = panel.convertPoint(toScreen:first.convert(NSPoint(x:20,y:4),to:nil))
         let businessPoint = panel.convertPoint(toScreen:NSPoint(x:panel.frame.width-16,y:30))
-        verify(panel.frame == saved && !panel.isGrabEvent(event(.leftMouseDown,at:controlPoint,modifiers:[.control])) && !panel.isGrabEvent(event(.leftMouseDown,at:businessPoint)), "collapse restores release position and never captures business/control-click regions")
+        let currentMenuPoint = panel.convertPoint(toScreen:menuRegion.convert(NSPoint(x:40,y:14),to:nil))
+        verify(closeFrame(panel.frame,saved) && !panel.isGrabEvent(event(.leftMouseDown,at:controlPoint,modifiers:[.control])) && !panel.isGrabEvent(event(.leftMouseDown,at:businessPoint)) && !panel.isGrabEvent(event(.leftMouseDown,at:currentMenuPoint)) && first.hitTest(NSPoint(x:20,y:4)) == nil, "registered native drag areas stay passive and never capture mailbox/business/control-click regions")
         panel.sendEvent(event(.leftMouseDown,at:controlPoint))
         controller.observeMouseEvent(menuItemEvent,isGlobal:true)
         verify(!panel.isPressed && !controller.isExpanded, "fresh external mouse-down clears an old unmatched press before immediate collapse")
@@ -170,6 +195,21 @@ extension MailFloatingController {
         let escape = NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:panel.windowNumber,context:nil,characters:"\u{1b}",charactersIgnoringModifiers:"\u{1b}",isARepeat:false,keyCode:53)!
         panel.keyDown(with:escape)
         verify(!controller.isExpanded && !panel.isPressed && controller.trackingMenus.isEmpty, "Escape clears owned menu state and collapses without disabling the feature")
+        reveal(113)
+        let nearStart = panel.frame
+        let nearGrabPoint = panel.convertPoint(toScreen:second.convert(NSPoint(x:15,y:4),to:nil))
+        let nearOffset = NSSize(width:nearGrabPoint.x-nearStart.minX,height:nearGrabPoint.y-nearStart.minY)
+        panel.sendEvent(event(.leftMouseDown,at:nearGrabPoint))
+        let nearLeft = NSPoint(x:screen.visibleFrame.minX+20+nearOffset.width,y:screen.visibleFrame.minY+100+nearOffset.height)
+        panel.sendEvent(event(.leftMouseDragged,at:nearLeft))
+        verify(panel.isPressed && panel.frame.minX == screen.visibleFrame.minX && controller.dockMode == .left && controller.isOnLeft && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "free", "entering the 32 pt left threshold snaps during carry without writing defaults")
+        let offLeft = NSPoint(x:screen.visibleFrame.minX+40+nearOffset.width,y:nearLeft.y)
+        panel.sendEvent(event(.leftMouseDragged,at:offLeft))
+        verify(panel.frame.minX == screen.visibleFrame.minX+40 && controller.dockMode == .free && controller.isOnLeft, "moving beyond threshold immediately leaves the dock without changing original grab offset")
+        panel.sendEvent(event(.leftMouseDragged,at:nearLeft))
+        let dockedBeforeRelease = panel.frame
+        panel.sendEvent(event(.leftMouseUp,at:nearLeft))
+        verify(closeFrame(panel.frame,dockedBeforeRelease) && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "left", "docked expanded release persists without a new jump")
         controller.collapse(pointer:outside,now:base.addingTimeInterval(120))
         let railStart = panel.frame
         let railPoint = panel.convertPoint(toScreen:NSPoint(x:10,y:50))
@@ -177,15 +217,32 @@ extension MailFloatingController {
         controller.railPointerEntered(); controller.expand(); evaluate(railPoint,200)
         verify(panel.isPressed && !controller.isExpanded && panel.frame == railStart, "native rail press prevents reveal and keeps small physical hit window")
         let railBeforeRatio = defaults.double(forKey:"gaoyoujian.floating.verticalRatio")
-        let railTarget = NSPoint(x:screen.visibleFrame.maxX-70,y:screen.visibleFrame.minY+160)
+        let railTarget = NSPoint(x:screen.visibleFrame.minX+screen.visibleFrame.width*0.6,y:screen.visibleFrame.minY+160)
         panel.sendEvent(event(.leftMouseDragged,at:railTarget))
         let noEarlySave = defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == railBeforeRatio
         panel.sendEvent(event(.leftMouseUp,at:railTarget))
-        verify(noEarlySave && !panel.isPressed && !panel.isVisible && !controller.isExpanded && panel.frame.size == railHitSize && !controller.isOnLeft && panel.frame.maxX == screen.visibleFrame.maxX && defaults.string(forKey:"gaoyoujian.floating.edge") == "right", "native rail drag release preserves tiny form and saves its new edge")
+        verify(noEarlySave && !panel.isPressed && !panel.isVisible && !controller.isExpanded && panel.frame.size == railHitSize && !controller.isOnLeft && controller.dockMode == .free && panel.frame.minX > screen.visibleFrame.minX && panel.frame.maxX < screen.visibleFrame.maxX && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "free", "native hidden drag stays a tiny free rail at mid-screen and chooses its inward direction")
+        let savedFreeRail = panel.frame
         reveal(210)
+        let freeBeforeResize = panel.frame
+        let horizontalBeforeResize = controller.horizontalRatio, verticalBeforeResize = controller.verticalRatio
         controller.updateExpandedHeight(1000)
         let heightLimit = min(420,screen.visibleFrame.height)
-        verify(controller.expandedHeight == heightLimit && panel.frame.height == heightLimit && !panel.isVisible, "natural card height clamps real native frame to screen and 420 pt")
+        verify(controller.expandedHeight == heightLimit && panel.frame.height == heightLimit && !panel.isVisible && controller.horizontalRatio == horizontalBeforeResize && controller.verticalRatio == verticalBeforeResize && panel.frame.maxX == freeBeforeResize.maxX, "natural height changes reflow the free card without changing its canonical anchor")
+        controller.collapse(pointer:outside,now:base.addingTimeInterval(211))
+        verify(closeFrame(panel.frame,savedFreeRail), "height clamping never overwrites the free hidden rail position")
+        controller.rememberedDisplay = "missing-test-display"
+        controller.screensChanged()
+        verify(controller.rememberedDisplay != "missing-test-display" && controller.horizontalRatio == horizontalBeforeResize && controller.verticalRatio == verticalBeforeResize && controller.dockMode == .free, "display fallback retains canonical free ratios rather than forcing a dock")
+        let rightPoint = panel.convertPoint(toScreen:NSPoint(x:10,y:50))
+        panel.sendEvent(event(.leftMouseDown,at:rightPoint))
+        let nearRight = NSPoint(x:screen.visibleFrame.maxX-12,y:screen.visibleFrame.minY+240)
+        panel.sendEvent(event(.leftMouseDragged,at:nearRight))
+        verify(panel.isPressed && panel.frame.maxX == screen.visibleFrame.maxX && controller.dockMode == .right && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "free", "a hidden rail snaps to the right during carry without early preference writes")
+        panel.sendEvent(event(.leftMouseUp,at:nearRight))
+        verify(!panel.isPressed && defaults.string(forKey:"gaoyoujian.floating.dockMode") == "right" && panel.frame.maxX == screen.visibleFrame.maxX, "right rail release persists the existing dock")
+        controller.resetPosition()
+        verify(controller.dockMode == .right && controller.horizontalRatio == 1 && controller.verticalRatio == 0.15 && defaults.object(forKey:"gaoyoujian.floating.dockMode") == nil && defaults.object(forKey:"gaoyoujian.floating.horizontalRatio") == nil && defaults.bool(forKey:"gaoyoujian.floating.pinned"), "reset clears new position keys while retaining unrelated legacy settings")
         controller.hide()
         verify(controller.eventMonitors.isEmpty && controller.pointerTimer == nil && controller.trackingMenus.isEmpty && !controller.isVisible, "disable removes observers, timer and stale menu protection")
         controller.show()
@@ -224,8 +281,33 @@ extension MailFloatingController {
         check(MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:false,verticalRatio:-4) == MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:false,verticalRatio:0), "negative ratio clamped")
         check(MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:false,verticalRatio:4) == MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:false,verticalRatio:1), "large ratio clamped")
         check(MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:false,verticalRatio:.nan) == MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:false,verticalRatio:0.15), "invalid ratio safely defaults")
-        check(MailFloatingController.nearestEdgeIsLeft(for:NSRect(x:20,y:20,width:340,height:430),in:screen), "drag snaps left")
-        check(!MailFloatingController.nearestEdgeIsLeft(for:NSRect(x:1000,y:20,width:340,height:430),in:screen), "drag snaps right")
+        check(MailFloatingController.dockMode(for:NSRect(x:32,y:20,width:340,height:280),in:screen) == .left, "32 pt boundary enters left dock")
+        check(MailFloatingController.dockMode(for:NSRect(x:33,y:20,width:340,height:280),in:screen) == .free, "one point beyond threshold is free")
+        check(MailFloatingController.dockMode(for:NSRect(x:screen.maxX-340-32,y:20,width:340,height:280),in:screen) == .right, "32 pt boundary enters right dock")
+        check(MailFloatingController.dockMode(for:NSRect(x:400,y:screen.maxY-280,width:340,height:280),in:screen) == .free, "touching top does not add unsolicited top docking")
+        check(MailFloatingController.safeRatio(.nan,fallback:0.15) == 0.15 && MailFloatingController.safeRatio(.infinity,fallback:1) == 1 && MailFloatingController.safeRatio(-3,fallback:0.5) == 0 && MailFloatingController.safeRatio(3,fallback:0.5) == 1, "saved free ratios validate and clamp finite values")
+        let knownFree = NSRect(x:400,y:200,width:340,height:280)
+        for left in [true,false] {
+            let ratios = MailFloatingController.anchorRatios(for:knownFree,in:screen,isLeft:left)
+            let rail = MailFloatingController.placementFrame(size:MailFloatingController.railHitSize,in:screen,dock:.free,isLeft:left,horizontalRatio:ratios.horizontal,verticalRatio:ratios.vertical)
+            let card = MailFloatingController.placementFrame(size:knownFree.size,in:screen,dock:.free,isLeft:left,horizontalRatio:ratios.horizontal,verticalRatio:ratios.vertical)
+            let expectedRail = NSRect(x:left ? 400 : 720,y:376,width:20,height:104)
+            check(abs(rail.minX-expectedRail.minX) < 0.01 && abs(rail.minY-expectedRail.minY) < 0.01, "a free card restores the known top/side rail anchor")
+            check(abs(card.minX-knownFree.minX) < 0.01 && abs(card.minY-knownFree.minY) < 0.01, "free expand/collapse restores the actual card rather than the nearest screen edge")
+            let alternate = screens[1]
+            let shiftedRail = MailFloatingController.placementFrame(size:MailFloatingController.railHitSize,in:alternate,dock:.free,isLeft:left,horizontalRatio:ratios.horizontal,verticalRatio:ratios.vertical)
+            let shiftedCard = MailFloatingController.placementFrame(size:NSSize(width:340,height:420),in:alternate,dock:.free,isLeft:left,horizontalRatio:ratios.horizontal,verticalRatio:ratios.vertical)
+            check(alternate.contains(shiftedRail) && alternate.contains(shiftedCard) && shiftedCard.insetBy(dx:-0.01,dy:-0.01).contains(shiftedRail), "canonical ratios remain reachable on a different screen with negative coordinates")
+        }
+        let crossed = NSRect(x:100,y:200,width:340,height:280)
+        let crossedRatios = MailFloatingController.anchorRatios(for:crossed,in:screen,isLeft:false)
+        let crossedRestored = MailFloatingController.placementFrame(size:crossed.size,in:screen,dock:.free,isLeft:false,horizontalRatio:crossedRatios.horizontal,verticalRatio:crossedRatios.vertical)
+        check(crossedRatios.horizontal < 0.5 && abs(crossedRestored.minX-crossed.minX) < 0.01, "cross-midpoint expanded free drag retains direction without a 320 pt jump")
+        let taller = MailFloatingController.placementFrame(size:NSSize(width:340,height:420),in:screen,dock:.free,isLeft:false,horizontalRatio:crossedRatios.horizontal,verticalRatio:crossedRatios.vertical)
+        check(abs(taller.maxX-crossed.maxX) < 0.01 && abs(taller.maxY-crossed.maxY) < 0.01, "free content height change preserves canonical top and side")
+        let bottomRail = MailFloatingController.placementFrame(size:MailFloatingController.railHitSize,in:screen,dock:.free,isLeft:false,horizontalRatio:0.6,verticalRatio:1)
+        let bottomCard = MailFloatingController.placementFrame(size:NSSize(width:340,height:420),in:screen,dock:.free,isLeft:false,horizontalRatio:0.6,verticalRatio:1)
+        check(bottomRail.minY == screen.minY && screen.contains(bottomCard) && bottomCard.contains(bottomRail), "a bottom free anchor survives larger-card clamping")
         check(MailFloatingController.safeOpacity(-1) == 0.65 && MailFloatingController.safeOpacity(2) == 1 && MailFloatingController.safeOpacity(.nan) == 1, "opacity remains visible")
         var session = MailFloatingDragSession()
         let original = NSRect(x:400,y:200,width:340,height:430)

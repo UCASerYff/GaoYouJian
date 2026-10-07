@@ -5,6 +5,7 @@ struct MailFloatingView: View {
     @ObservedObject var store: MailStore
     @ObservedObject var controller: MailFloatingController
     @State private var selectedAccountID: UUID?
+    private static let dragAreaHeight: CGFloat = 18
 
     private var summary: MailFloatingSummary {
         MailFloatingSummary(library: store.library, messages: store.messages, accountID: selectedAccountID)
@@ -26,21 +27,24 @@ struct MailFloatingView: View {
     }
 
     private var card: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 6) {
-                dragArea
+        VStack(spacing: 0) {
+            dragArea
+            ScrollView(.vertical) {
                 expandedContent
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(key: MailFloatingHeightPreferenceKey.self, value: geometry.size.height + Self.dragAreaHeight)
+                        }
+                    }
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: MailFloatingHeightPreferenceKey.self, value: geometry.size.height)
-                }
-            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: max(controller.expandedHeight - Self.dragAreaHeight, 0))
         }
-        .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity)
         .frame(height: controller.expandedHeight)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -55,9 +59,9 @@ struct MailFloatingView: View {
     }
 
     private var dragArea: some View {
-        Color.clear.frame(maxWidth: .infinity).frame(height: 8)
+        Color.clear.frame(maxWidth: .infinity).frame(height: min(Self.dragAreaHeight, controller.expandedHeight))
             .overlay(MailFloatingDragHandle().accessibilityHidden(true))
-            .help("拖动顶部空白移动悬浮窗，松手吸附左右边缘")
+            .help("拖动顶部空白自由移动悬浮窗，靠近左右边缘时吸附")
     }
 
     private var accountPicker: some View {
@@ -100,6 +104,8 @@ struct MailFloatingView: View {
             }
             .frame(height: 64)
             .padding(.horizontal, 4)
+            .background(MailFloatingDragHandle().allowsHitTesting(false).accessibilityHidden(true))
+            .help("拖动未读统计区域自由移动悬浮窗，靠近左右边缘时吸附")
             Divider().opacity(0.5)
             VStack(alignment: .leading, spacing: 6) {
                 if summary.accounts.isEmpty { emptyAccounts }

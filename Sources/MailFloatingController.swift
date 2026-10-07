@@ -32,6 +32,10 @@ struct MailFloatingDragSession {
     }
 }
 
+enum MailFloatingDockMode: String, Sendable {
+    case free, left, right
+}
+
 /// A nonactivating utility panel: showing mail counts never takes focus from the user's current app.
 @MainActor
 private final class MailFloatingPanel: NSPanel {
@@ -130,6 +134,8 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     private var isApplyingFrame = false
     private var savedVisible: Bool
     private var rememberedDisplay: String?
+    private var dockMode: MailFloatingDockMode
+    private var horizontalRatio: Double
     private var verticalRatio: Double
     private var pointerTimer: Timer?
     private var lastInsideAt = Date()
@@ -151,6 +157,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     static let railHitSize = NSSize(width: 20, height: 104)
     static let railVisualSize = NSSize(width: 6, height: 88)
     static let cardCornerRadius: CGFloat = 18
+    static let dockDistance: CGFloat = 32
     private static let pointerInterval: TimeInterval = 0.04
     private static let leaveDelay: TimeInterval = 0.08
 
@@ -162,6 +169,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         static let horizontal = "gaoyoujian.floating.horizontalRatio"
         static let vertical = "gaoyoujian.floating.verticalRatio"
         static let edge = "gaoyoujian.floating.edge"
+        static let dock = "gaoyoujian.floating.dockMode"
     }
 
     init(store: MailStore, defaults: UserDefaults = .standard) {
@@ -171,9 +179,17 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         showPreviews = defaults.bool(forKey: Key.previews)
         opacity = Self.safeOpacity(defaults.object(forKey: Key.opacity) as? Double ?? 1)
         rememberedDisplay = defaults.string(forKey: Key.display)
+        let savedSide = defaults.string(forKey: Key.edge)
+        let restoredDock = defaults.string(forKey: Key.dock).flatMap(MailFloatingDockMode.init(rawValue:))
+            ?? (savedSide == "left" ? .left : .right)
+        dockMode = restoredDock
+        let savedHorizontal = defaults.object(forKey: Key.horizontal) as? Double ?? (savedSide == "left" ? 0 : 1)
+        let restoredHorizontal = Self.safeRatio(savedHorizontal, fallback: savedSide == "left" ? 0 : 1)
+        horizontalRatio = restoredHorizontal
         let rememberedRatio = defaults.object(forKey: Key.vertical) as? Double ?? 0.15
-        verticalRatio = rememberedRatio.isFinite ? min(max(rememberedRatio, 0), 1) : 0.15
-        isOnLeft = defaults.string(forKey: Key.edge) == "left"
+        verticalRatio = Self.safeRatio(rememberedRatio, fallback: 0.15)
+        isOnLeft = restoredDock == .left || (restoredDock == .free &&
+            (savedSide == "left" || (savedSide != "right" && savedSide != "left" && restoredHorizontal < 0.5)))
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willTerminate), name: NSApplication.willTerminateNotification, object: nil)
@@ -298,14 +314,9 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         if expandedHeight != previousHeight, isExpanded, let panel { applyRestoredFrame(to: panel) }
     }
 
-    /// Called after the native mouse-up; moving the card and persisting its destination are separate operations.
-    func snapToEdge() {
-        guard let panel, !panel.isPressed, let screen = screenContaining(panel.frame) ?? preferredScreen() else { return }
-        isOnLeft = Self.nearestEdgeIsLeft(for: panel.frame, in: screen.visibleFrame)
-        rememberedDisplay = Self.displayIdentifier(screen)
-        let available = max(screen.visibleFrame.height - Self.railHitSize.height, 0)
-        verticalRatio = available > 0 ? Double((screen.visibleFrame.maxY - panel.frame.maxY) / available) : 0
-        verticalRatio = min(max(verticalRatio, 0), 1)
+    /// Finish the native gesture. Carrying already decided free/docked placement; release only saves it.
+    func finishDragging() {
+        guard let panel, !panel.isPressed else { return }
         persistPosition()
         applyRestoredFrame(to: panel)
         lastInsideAt = Date()
@@ -325,10 +336,13 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         defaults.removeObject(forKey: Key.horizontal)
         defaults.removeObject(forKey: Key.vertical)
         defaults.removeObject(forKey: Key.edge)
+        defaults.removeObject(forKey: Key.dock)
         rememberedDisplay = nil
+        dockMode = .right
+        horizontalRatio = 1
         verticalRatio = 0.15
         isOnLeft = false
-        if let panel { applyRestoredFrame(to: panel) }
+        if let panel { applyRestoredFrame(to: panel, persistResolvedDisplay: false) }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -471,7 +485,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
             // A release delivered elsewhere must not leave our previous gesture latched forever.
             if !belongsToPanel, panel.isPressed {
                 panel.cancelInteraction()
-                snapToEdge()
+                finishDragging()
                 let previousHeight = expandedHeight
                 refreshExpandedHeight()
                 if expandedHeight != previousHeight, isExpanded { applyRestoredFrame(to: panel) }
@@ -568,7 +582,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         window.onDrag = { [weak self] pointer, offset in self?.movePanel(pointer: pointer, grabOffset: offset) }
         window.onRelease = { [weak self] dragged in
             guard let self else { return }
-            if dragged { self.snapToEdge() }
+            if dragged { self.finishDragging() }
             else if !self.isExpanded { self.revealRequiresExit = false; self.expand() }
             self.refreshExpandedHeight()
             if self.isExpanded, let panel = self.panel { self.applyRestoredFrame(to: panel) }
@@ -617,22 +631,39 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         panel.orderFrontRegardless()
     }
 
-    private func applyRestoredFrame(to panel: NSWindow) {
+    private func applyRestoredFrame(to panel: NSWindow, persistResolvedDisplay: Bool = true) {
         guard (panel as? MailFloatingPanel)?.isPressed != true else { return }
         guard let screen = preferredScreen() else { return }
         refreshExpandedHeight(for: screen)
         let connectedDisplay = Self.displayIdentifier(screen)
         if rememberedDisplay != connectedDisplay {
             rememberedDisplay = connectedDisplay
-            persistPosition()
+            if persistResolvedDisplay { persistPosition() }
         }
-        setFrame(Self.edgeFrame(size: desiredSize, in: screen.visibleFrame, isLeft: isOnLeft, verticalRatio: verticalRatio), on: panel)
+        setFrame(Self.placementFrame(size: desiredSize, in: screen.visibleFrame, dock: dockMode,
+                                     isLeft: isOnLeft, horizontalRatio: horizontalRatio, verticalRatio: verticalRatio), on: panel)
     }
 
     private func movePanel(pointer: NSPoint, grabOffset: NSSize) {
         guard let panel, panel.isPressed,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? panel.screen ?? preferredScreen() else { return }
-        setFrame(Self.draggingFrame(pointer: pointer, grabOffset: grabOffset, size: panel.frame.size, in: screen.visibleFrame), on: panel)
+        let candidate = Self.draggingFrame(pointer: pointer, grabOffset: grabOffset, size: panel.frame.size, in: screen.visibleFrame)
+        let mode = Self.dockMode(for: candidate, in: screen.visibleFrame)
+        let carried = Self.snappedFrame(candidate, in: screen.visibleFrame, dock: mode)
+        setFrame(carried, on: panel)
+        // AppKit can align the requested frame to pixels. Remember the real result, not the request.
+        recordPlacement(frame: panel.frame, in: screen, mode: mode)
+    }
+
+    private func recordPlacement(frame: NSRect, in screen: NSScreen, mode: MailFloatingDockMode) {
+        dockMode = mode
+        if mode != .free { isOnLeft = mode == .left }
+        else if !isExpanded { isOnLeft = Self.nearestEdgeIsLeft(for: frame, in: screen.visibleFrame) }
+        // A free expanded card retains its opening direction even when dragged across the screen's midpoint.
+        let ratios = Self.anchorRatios(for: frame, in: screen.visibleFrame, isLeft: isOnLeft)
+        horizontalRatio = mode == .left ? 0 : mode == .right ? 1 : ratios.horizontal
+        verticalRatio = ratios.vertical
+        rememberedDisplay = Self.displayIdentifier(screen)
     }
 
     private func setFrame(_ frame: NSRect, on panel: NSWindow) {
@@ -644,8 +675,9 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     private func persistPosition() {
         defaults.set(rememberedDisplay, forKey: Key.display)
         defaults.set(isOnLeft ? "left" : "right", forKey: Key.edge)
+        defaults.set(dockMode.rawValue, forKey: Key.dock)
+        defaults.set(horizontalRatio, forKey: Key.horizontal)
         defaults.set(verticalRatio, forKey: Key.vertical)
-        defaults.removeObject(forKey: Key.horizontal)
     }
 
     private func preferredScreen() -> NSScreen? {
@@ -669,6 +701,10 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     static func safeOpacity(_ value: Double) -> Double { value.isFinite ? min(max(value, 0.65), 1) : 1 }
 
+    static func safeRatio(_ value: Double, fallback: Double) -> Double {
+        value.isFinite ? min(max(value, 0), 1) : min(max(fallback.isFinite ? fallback : 0.5, 0), 1)
+    }
+
     static func safeExpandedHeight(_ ideal: CGFloat, availableHeight: CGFloat) -> CGFloat {
         let limit = availableHeight.isFinite ? min(max(availableHeight, 1), 420) : 420
         return min(max(ideal.isFinite ? ceil(ideal) : 280, 1), limit)
@@ -685,7 +721,33 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     static func nearestEdgeIsLeft(for frame: NSRect, in visible: NSRect) -> Bool { frame.midX < visible.midX }
 
-    /// Dragging follows the pointer freely; edge snapping is intentionally deferred until mouse-up.
+    static func dockMode(for frame: NSRect, in visible: NSRect) -> MailFloatingDockMode {
+        let left = max(frame.minX - visible.minX, 0)
+        let right = max(visible.maxX - frame.maxX, 0)
+        guard left <= dockDistance || right <= dockDistance else { return .free }
+        return left <= right ? .left : .right
+    }
+
+    static func snappedFrame(_ requested: NSRect, in visible: NSRect, dock: MailFloatingDockMode) -> NSRect {
+        var frame = requested
+        if dock == .left { frame.origin.x = visible.minX }
+        else if dock == .right { frame.origin.x = visible.maxX - frame.width }
+        return frame
+    }
+
+    /// Store the small rail's top and side anchor rather than the card's changing dimensions.
+    static func anchorRatios(for frame: NSRect, in visible: NSRect, isLeft: Bool) -> (horizontal: Double, vertical: Double) {
+        let railWidth = min(railHitSize.width, max(visible.width, 1))
+        let railHeight = min(railHitSize.height, max(visible.height, 1))
+        let x = isLeft ? frame.minX : frame.maxX - railWidth
+        let across = max(visible.width - railWidth, 0)
+        let down = max(visible.height - railHeight, 0)
+        let horizontal = across > 0 ? Double((x - visible.minX) / across) : 0.5
+        let vertical = down > 0 ? Double((visible.maxY - frame.maxY) / down) : 0
+        return (safeRatio(horizontal, fallback: 0.5), safeRatio(vertical, fallback: 0.15))
+    }
+
+    /// A raw reachable candidate. The caller decides 32 pt side docking during this same drag event.
     static func draggingFrame(pointer: NSPoint, grabOffset: NSSize, size: NSSize, in visible: NSRect) -> NSRect {
         let width = min(max(size.width, 1), max(visible.width, 1))
         let height = min(max(size.height, 1), max(visible.height, 1))
@@ -696,13 +758,28 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     /// Both forms use the rail's top anchor, so a reveal keeps the user's pointer inside the card.
     static func edgeFrame(size: NSSize, in visible: NSRect, isLeft: Bool, verticalRatio: Double) -> NSRect {
-        let ratio = verticalRatio.isFinite ? min(max(verticalRatio, 0), 1) : 0.15
+        placementFrame(size: size, in: visible, dock: isLeft ? .left : .right, isLeft: isLeft,
+                       horizontalRatio: isLeft ? 0 : 1, verticalRatio: verticalRatio)
+    }
+
+    static func placementFrame(size: NSSize, in visible: NSRect, dock: MailFloatingDockMode,
+                               isLeft: Bool, horizontalRatio: Double, verticalRatio: Double) -> NSRect {
+        let ratio = safeRatio(verticalRatio, fallback: 0.15)
         let width = min(max(size.width, 1), max(visible.width, 1))
         let height = min(max(size.height, 1), max(visible.height, 1))
+        let railWidth = min(railHitSize.width, max(visible.width, 1))
         let railHeight = min(railHitSize.height, max(visible.height, 1))
         let top = visible.maxY - CGFloat(ratio) * max(visible.height - railHeight, 0)
         let y = min(max(top - height, visible.minY), visible.maxY - height)
-        let x = isLeft ? visible.minX : visible.maxX - width
+        let x: CGFloat
+        if dock == .left { x = visible.minX }
+        else if dock == .right { x = visible.maxX - width }
+        else {
+            let horizontal = safeRatio(horizontalRatio, fallback: isLeft ? 0 : 1)
+            let railX = visible.minX + CGFloat(horizontal) * max(visible.width - railWidth, 0)
+            let requestedX = isLeft ? railX : railX + railWidth - width
+            x = min(max(requestedX, visible.minX), visible.maxX - width)
+        }
         return NSRect(x: x, y: y, width: width, height: height)
     }
 
@@ -742,6 +819,7 @@ struct MailFloatingDragHandle: NSViewRepresentable {
     final class DragView: NSView {
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); registerDragArea() }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
         func registerDragArea() { (window as? MailFloatingPanel)?.dragHandles.add(self) }
     }
