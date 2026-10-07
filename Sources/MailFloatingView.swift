@@ -41,17 +41,10 @@ struct MailFloatingView: View {
 
     private var header: some View {
         HStack(spacing: 5) {
-            HStack(spacing: 7) {
-                if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "png"), let image = NSImage(contentsOf: url) {
-                    Image(nsImage: image).resizable().interpolation(.high).frame(width: 27, height: 27).accessibilityHidden(true)
-                }
-                Text("搞邮件").font(.system(size: 14, weight: .semibold))
-                Text("V" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-            }
-            .overlay(MailFloatingDragHandle(onDragEnded:controller.snapToEdge).accessibilityHidden(true))
-            .help("拖动这里移动悬浮窗")
             Spacer(minLength: 0)
+                .frame(height: 28)
+                .overlay(MailFloatingDragHandle().accessibilityHidden(true))
+                .help("拖动顶部空白移动悬浮窗，松手吸附左右边缘")
             FloatingMailIcon(symbol: controller.isPinned ? "pin.fill" : "pin", title: controller.isPinned ? "取消固定" : "固定展开悬浮窗", active: controller.isPinned) {
                 controller.isPinned.toggle()
             }

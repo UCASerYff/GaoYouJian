@@ -18,7 +18,7 @@ struct MailFloatingRailView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(MailFloatingRailTrackingView(onEnter: { controller.expand() }, onExit: { controller.railPointerExited() }).accessibilityHidden(true))
+        .background(MailFloatingRailTrackingView(onEnter: { controller.railPointerEntered() }, onExit: { controller.railPointerExited() }).accessibilityHidden(true))
         .accessibilityLabel(errorCount > 0 ? "搞邮件，邮箱待检查" : unreadCount > 0 ? "搞邮件，有缓存未读邮件" : "搞邮件悬浮窗")
     }
 }
