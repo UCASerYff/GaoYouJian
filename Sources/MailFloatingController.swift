@@ -92,20 +92,6 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     @Published private(set) var isVisible = false
     @Published private(set) var isExpanded = false
     @Published private(set) var isOnLeft = false
-    @Published var isPinned: Bool {
-        didSet {
-            defaults.set(isPinned, forKey: Key.pinned)
-            if isPinned && isVisible { expand() }
-            lastInsideAt = Date()
-        }
-    }
-    @Published var isCompact: Bool {
-        didSet {
-            guard oldValue != isCompact else { return }
-            defaults.set(isCompact, forKey: Key.compact)
-            if let panel { applyRestoredFrame(to: panel) }
-        }
-    }
     @Published var showPreviews: Bool {
         didSet { defaults.set(showPreviews, forKey: Key.previews) }
     }
@@ -143,14 +129,11 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     #endif
     private static let margin: CGFloat = 12
     static let expandedSize = NSSize(width: 340, height: 430)
-    static let compactSize = NSSize(width: 340, height: 142)
     static let railHitSize = NSSize(width: 20, height: 104)
     static let railVisualSize = NSSize(width: 6, height: 88)
 
     private enum Key {
         static let visible = "gaoyoujian.floating.visible"
-        static let pinned = "gaoyoujian.floating.pinned"
-        static let compact = "gaoyoujian.floating.compact"
         static let previews = "gaoyoujian.floating.showPreviews"
         static let opacity = "gaoyoujian.floating.opacity"
         static let display = "gaoyoujian.floating.display"
@@ -163,8 +146,6 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         self.store = store
         self.defaults = defaults
         savedVisible = defaults.object(forKey: Key.visible) as? Bool ?? true
-        isPinned = defaults.object(forKey: Key.pinned) as? Bool ?? false
-        isCompact = defaults.bool(forKey: Key.compact)
         showPreviews = defaults.bool(forKey: Key.previews)
         opacity = Self.safeOpacity(defaults.object(forKey: Key.opacity) as? Double ?? 1)
         rememberedDisplay = defaults.string(forKey: Key.display)
@@ -194,12 +175,13 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         guard !NSScreen.screens.isEmpty else { return }
         let window = ensurePanel()
         isVisible = true
-        isExpanded = true
+        isExpanded = false
         revealRequiresExit = false
-        window.allowsKey = true
+        hoverStartedAt = nil
+        window.allowsKey = false
         window.isMovableByWindowBackground = false
-        window.hasShadow = true
-        window.contentView?.layer?.cornerRadius = 18
+        window.hasShadow = false
+        window.contentView?.layer?.cornerRadius = 0
         applyRestoredFrame(to: window)
         window.level = .floating
         window.alphaValue = Self.safeOpacity(opacity)
@@ -225,11 +207,14 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     func toggle() { isVisible ? hide() : show() }
 
     /// Reveal the card from the tiny native edge hit window, without activating the application.
-    func expand() {
+    func expand() { expand(pointer: NSEvent.mouseLocation, now: Date()) }
+
+    private func expand(pointer: NSPoint, now: Date) {
         guard isVisible, let panel, !panel.isPressed else { return }
-        if revealRequiresExit && panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) { return }
+        if revealRequiresExit && panel.frame.insetBy(dx: -2, dy: -2).contains(pointer) { return }
         revealRequiresExit = false
-        lastInsideAt = Date()
+        hoverStartedAt = nil
+        lastInsideAt = now
         guard !isExpanded else { return }
         isExpanded = true
         panel.allowsKey = true
@@ -252,7 +237,9 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     }
 
     /// Keep the feature enabled while replacing the actual window frame with its 20 × 104 hit area.
-    func collapse() {
+    func collapse() { collapse(pointer: NSEvent.mouseLocation, now: Date()) }
+
+    private func collapse(pointer: NSPoint, now: Date) {
         guard isVisible, let panel, !panel.isPressed else { return }
         isExpanded = false
         panel.allowsKey = false
@@ -261,7 +248,9 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         panel.contentView?.layer?.cornerRadius = 0
         if panel.isKeyWindow { panel.resignKey() }
         applyRestoredFrame(to: panel)
-        revealRequiresExit = panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        hoverStartedAt = nil
+        lastInsideAt = now
+        revealRequiresExit = panel.frame.insetBy(dx: -2, dy: -2).contains(pointer)
         presentPanel(panel)
     }
 
@@ -323,6 +312,9 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     }
 
     private func installMenuBarItemIfNeeded() {
+        #if DEBUG_TESTING
+        if suppressPanelPresentationForTesting { return }
+        #endif
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let image = NSImage(systemSymbolName: "envelope", accessibilityDescription: "搞邮件")
@@ -396,24 +388,30 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     }
 
     private func checkPointer() {
+        evaluatePointer(pointer: NSEvent.mouseLocation, now: Date(), inputActive: NSEvent.pressedMouseButtons != 0, modalActive: NSApp.modalWindow != nil)
+    }
+
+    private func evaluatePointer(pointer: NSPoint, now: Date, inputActive: Bool, modalActive: Bool) {
         guard isVisible, let panel else { return }
-        guard !panel.isPressed else { hoverStartedAt = nil; lastInsideAt = Date(); return }
-        let inside = panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        guard !panel.isPressed else { hoverStartedAt = nil; lastInsideAt = now; return }
+        let inside = panel.frame.insetBy(dx: -2, dy: -2).contains(pointer)
+        let interactionActive = externalMenuOpen || !trackingMenus.isEmpty || inputActive || modalActive
         if !isExpanded {
+            if interactionActive { hoverStartedAt = nil; return }
             if revealRequiresExit {
                 if !inside { revealRequiresExit = false }
                 return
             }
             if !inside { hoverStartedAt = nil; return }
-            if hoverStartedAt == nil { hoverStartedAt = Date() }
-            if let hoverStartedAt, Date().timeIntervalSince(hoverStartedAt) >= 0.28 { expand() }
+            if hoverStartedAt == nil { hoverStartedAt = now }
+            if let hoverStartedAt, now.timeIntervalSince(hoverStartedAt) >= 0.28 { expand(pointer: pointer, now: now) }
             return
         }
-        if inside || isPinned || externalMenuOpen || !trackingMenus.isEmpty || NSEvent.pressedMouseButtons != 0 || NSApp.modalWindow != nil {
-            lastInsideAt = Date()
+        if inside || interactionActive {
+            lastInsideAt = now
             return
         }
-        if Date().timeIntervalSince(lastInsideAt) > 0.45 { collapse() }
+        if now.timeIntervalSince(lastInsideAt) > 0.45 { collapse(pointer: pointer, now: now) }
     }
 
     private func ensurePanel() -> MailFloatingPanel {
@@ -442,22 +440,23 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false
         window.isMovableByWindowBackground = false
+        window.allowsKey = isExpanded
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        window.hasShadow = isExpanded
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         window.level = .floating
         window.alphaValue = opacity
         let hosting = MailFloatingHostingView(rootView: MailFloatingView(store: store, controller: self))
         hosting.wantsLayer = true
-        hosting.layer?.cornerRadius = 18
+        hosting.layer?.cornerRadius = isExpanded ? 18 : 0
         hosting.layer?.masksToBounds = true
         window.contentView = hosting
         panel = window
         return window
     }
 
-    private var desiredSize: NSSize { isExpanded ? (isCompact ? Self.compactSize : Self.expandedSize) : Self.railHitSize }
+    private var desiredSize: NSSize { isExpanded ? Self.expandedSize : Self.railHitSize }
 
     private func presentPanel(_ panel: MailFloatingPanel) {
         #if DEBUG_TESTING

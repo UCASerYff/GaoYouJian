@@ -25,89 +25,116 @@ extension MailFloatingController {
         if let metadata = ProcessInfo.processInfo.environment["GAOYOUJIAN_TEST_SUITE_METADATA"] {
             try? (suite + "\n").write(to:URL(fileURLWithPath:metadata),atomically:true,encoding:.utf8)
         }
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.set(0.2, forKey: "gaoyoujian.floating.verticalRatio")
-        defaults.set("right", forKey: "gaoyoujian.floating.edge")
-        let controller = MailFloatingController(store: MailStore(), defaults: defaults)
+        let defaults = UserDefaults(suiteName:suite)!
+        defaults.set(0.2,forKey:"gaoyoujian.floating.verticalRatio")
+        defaults.set("right",forKey:"gaoyoujian.floating.edge")
+        defaults.set(true,forKey:"gaoyoujian.floating.pinned")
+        defaults.set(true,forKey:"gaoyoujian.floating.compact")
+        let controller = MailFloatingController(store:MailStore(),defaults:defaults)
         controller.suppressPanelPresentationForTesting = true
-        controller.isPinned = true
-        controller.isVisible = true
-        controller.isExpanded = true
+        controller.restoreIfNeeded()
         let panel = controller.ensurePanel()
-        controller.applyRestoredFrame(to: panel)
         defer {
-            panel.cancelInteraction()
+            controller.hide()
             panel.delegate = nil
             panel.contentView = nil
             panel.close()
-            defaults.removePersistentDomain(forName: suite)
+            defaults.removePersistentDomain(forName:suite)
             _ = defaults.synchronize()
             let preferenceFile = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Preferences", isDirectory:true).appendingPathComponent(suite + ".plist")
+                .appendingPathComponent("Library/Preferences",isDirectory:true).appendingPathComponent(suite + ".plist")
             if FileManager.default.fileExists(atPath:preferenceFile.path) { try? FileManager.default.removeItem(at:preferenceFile) }
-            verify(defaults.persistentDomain(forName: suite)?.isEmpty != false && !FileManager.default.fileExists(atPath:preferenceFile.path), "random native test preference domain and its empty plist are removed")
+            verify(defaults.persistentDomain(forName:suite)?.isEmpty != false && !FileManager.default.fileExists(atPath:preferenceFile.path), "random native test preference domain and its empty plist are removed")
             print("Hidden native framework: \(nativeChecks) checks passed; no window presentation or OS input injection")
         }
-        verify(!panel.isVisible && panel.level == .floating && panel.styleMask.contains(.nonactivatingPanel), "real native panel starts hidden with production style and level")
+        let base = Date()
+        let outside = NSPoint(x:screen.visibleFrame.minX-10,y:screen.visibleFrame.minY-10)
+        func evaluate(_ point:NSPoint,_ seconds:Double,input:Bool = false,modal:Bool = false) {
+            controller.evaluatePointer(pointer:point,now:base.addingTimeInterval(seconds),inputActive:input,modalActive:modal)
+        }
+        verify(!panel.isVisible && controller.isVisible && !controller.isExpanded && panel.frame.size == railHitSize && !panel.allowsKey && !panel.hasShadow && panel.level == .floating && controller.statusItem == nil && defaults.bool(forKey:"gaoyoujian.floating.pinned") && defaults.bool(forKey:"gaoyoujian.floating.compact"), "restore starts as a hidden small rail and leaves obsolete true preferences untouched")
+        let railCenter = NSPoint(x:panel.frame.midX,y:panel.frame.midY)
+        evaluate(railCenter,0); evaluate(railCenter,0.2)
+        verify(!controller.isExpanded && panel.frame.size == railHitSize, "rail hover waits for its reveal delay")
+        evaluate(railCenter,0.29)
+        verify(controller.isExpanded && panel.frame.size == expandedSize && !panel.isVisible, "hover expands the full native card despite obsolete compact=true")
+        let inside = NSPoint(x:panel.frame.midX,y:panel.frame.midY)
+        evaluate(inside,1); evaluate(outside,1.4)
+        verify(controller.isExpanded, "brief pointer departure preserves the card")
+        evaluate(outside,1.46)
+        verify(!controller.isExpanded && panel.frame.size == railHitSize, "pointer departure automatically shrinks the native card despite obsolete pinned=true")
+        controller.revealRequiresExit = false
+        controller.expand(pointer:outside,now:base.addingTimeInterval(10))
+        let menu = NSMenu()
+        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:menu))
+        evaluate(outside,11)
+        let menuProtected = controller.isExpanded
+        controller.menuTrackingEnded(Notification(name:NSMenu.didEndTrackingNotification,object:menu))
+        evaluate(NSPoint(x:panel.frame.midX,y:panel.frame.midY),12); evaluate(outside,12.46)
+        verify(menuProtected && !controller.isExpanded, "native menu tracking prevents automatic collapse until tracking ends")
+        controller.expand(pointer:outside,now:base.addingTimeInterval(20))
+        evaluate(outside,21,input:true)
+        let inputProtected = controller.isExpanded
+        evaluate(outside,22,modal:true)
+        let modalProtected = controller.isExpanded
+        evaluate(outside,22.46)
+        verify(inputProtected && modalProtected && !controller.isExpanded, "mouse input and modal state protect the card only while interaction remains active")
+        controller.expand(pointer:outside,now:base.addingTimeInterval(30))
         let host = panel.contentView!
-        let first = MailFloatingDragHandle.DragView(frame: NSRect(x:16,y:host.bounds.height-44,width:80,height:28))
-        let second = MailFloatingDragHandle.DragView(frame: NSRect(x:105,y:host.bounds.height-44,width:55,height:28))
+        let first = MailFloatingDragHandle.DragView(frame:NSRect(x:16,y:host.bounds.height-30,width:80,height:14))
+        let second = MailFloatingDragHandle.DragView(frame:NSRect(x:105,y:host.bounds.height-30,width:55,height:14))
         host.addSubview(first); host.addSubview(second)
         first.registerDragArea(); second.registerDragArea()
         var eventNumber = 0
-        func event(_ type: NSEvent.EventType, at point: NSPoint, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+        func event(_ type:NSEvent.EventType,at point:NSPoint,modifiers:NSEvent.ModifierFlags = []) -> NSEvent {
             eventNumber += 1
             return NSEvent.mouseEvent(with:type,location:panel.convertPoint(fromScreen:point),modifierFlags:modifiers,timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:eventNumber,clickCount:1,pressure:type == .leftMouseUp ? 0 : 1)!
         }
         let initial = panel.frame
-        let firstPoint = first.convert(NSPoint(x:20,y:14), to:nil)
-        let firstGlobal = panel.convertPoint(toScreen:firstPoint)
+        let firstGlobal = panel.convertPoint(toScreen:first.convert(NSPoint(x:20,y:7),to:nil))
         panel.sendEvent(event(.leftMouseDown,at:firstGlobal))
-        verify(panel.isPressed, "native sendEvent captures the first registered header region")
-        controller.collapse(); controller.resetPosition(); controller.checkPointer()
-        verify(controller.isExpanded && panel.frame == initial, "native press blocks collapse reset and pointer polling")
+        controller.collapse(); controller.resetPosition(); evaluate(outside,100)
+        verify(panel.isPressed && controller.isExpanded && panel.frame == initial, "native header press blocks automatic collapse and repositioning")
         panel.sendEvent(event(.leftMouseUp,at:firstGlobal))
         verify(!panel.isPressed && panel.frame == initial, "native click releases without moving or snapping")
-        let secondGlobal = panel.convertPoint(toScreen:second.convert(NSPoint(x:15,y:14),to:nil))
+        let secondGlobal = panel.convertPoint(toScreen:second.convert(NSPoint(x:15,y:7),to:nil))
         panel.sendEvent(event(.leftMouseDown,at:secondGlobal))
-        verify(panel.isPressed, "native sendEvent captures a second registered header region")
         let beforeRatio = defaults.double(forKey:"gaoyoujian.floating.verticalRatio")
         let offset = NSSize(width:secondGlobal.x-initial.minX,height:secondGlobal.y-initial.minY)
         let movedGlobal = NSPoint(x:screen.visibleFrame.minX+30+offset.width,y:screen.visibleFrame.minY+80+offset.height)
         panel.sendEvent(event(.leftMouseDragged,at:movedGlobal))
         let wanted = draggingFrame(pointer:movedGlobal,grabOffset:offset,size:initial.size,in:screen.visibleFrame)
-        verify(panel.frame == wanted && panel.isPressed && controller.isPinned, "real pinned panel follows native drag while the press remains active")
+        verify(panel.frame == wanted && panel.isPressed, "a second registered header region moves the real native card")
         verify(defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == beforeRatio && defaults.string(forKey:"gaoyoujian.floating.edge") == "right", "native drag does not persist before mouse-up")
         panel.sendEvent(event(.leftMouseUp,at:movedGlobal))
-        verify(!panel.isPressed && controller.isOnLeft && panel.frame.minX == screen.visibleFrame.minX, "native mouse-up invokes the real left-edge release callback")
-        verify(defaults.string(forKey:"gaoyoujian.floating.edge") == "left" && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") != beforeRatio, "native release persists the changed edge and height")
+        verify(!panel.isPressed && controller.isOnLeft && panel.frame.minX == screen.visibleFrame.minX && defaults.string(forKey:"gaoyoujian.floating.edge") == "left" && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") != beforeRatio, "native mouse-up snaps and persists the new edge and height")
         let saved = panel.frame
-        let controlPoint = panel.convertPoint(toScreen:first.convert(NSPoint(x:20,y:14),to:nil))
-        let buttonPoint = panel.convertPoint(toScreen:NSPoint(x:panel.frame.width-16,y:panel.frame.height-30))
-        verify(!panel.isGrabEvent(event(.leftMouseDown,at:controlPoint,modifiers:[.control])) && !panel.isGrabEvent(event(.leftMouseDown,at:buttonPoint)), "control-click and the right-side action-button region are not captured for dragging")
-        controller.collapse()
-        verify(!panel.isVisible && controller.isVisible && !controller.isExpanded && panel.frame.size == railHitSize, "real collapse retains feature state and shrinks the hidden native window")
-        controller.revealRequiresExit = false
-        controller.expand()
-        verify(!panel.isVisible && controller.isExpanded && panel.frame == saved, "real expansion restores the released card position without showing it")
-        controller.collapse()
+        let controlPoint = panel.convertPoint(toScreen:first.convert(NSPoint(x:20,y:7),to:nil))
+        let businessPoint = panel.convertPoint(toScreen:NSPoint(x:panel.frame.width-16,y:30))
+        verify(!panel.isGrabEvent(event(.leftMouseDown,at:controlPoint,modifiers:[.control])) && !panel.isGrabEvent(event(.leftMouseDown,at:businessPoint)), "control-click and business controls below the drag strip are not captured")
+        controller.collapse(pointer:outside,now:base.addingTimeInterval(110))
+        controller.expand(pointer:outside,now:base.addingTimeInterval(111))
+        verify(!panel.isVisible && controller.isExpanded && panel.frame == saved, "real collapse and expansion preserve the native release position")
+        controller.collapse(pointer:outside,now:base.addingTimeInterval(120))
         let railStart = panel.frame
         let railPoint = panel.convertPoint(toScreen:NSPoint(x:10,y:50))
         panel.sendEvent(event(.leftMouseDown,at:railPoint))
-        controller.railPointerEntered(); controller.expand(); controller.checkPointer()
-        verify(panel.isPressed && !controller.isExpanded && panel.frame == railStart, "native rail press prevents hover expansion")
+        controller.railPointerEntered(); controller.expand(); evaluate(railPoint,200)
+        verify(panel.isPressed && !controller.isExpanded && panel.frame == railStart, "native rail press prevents automatic and explicit expansion")
         let railBeforeRatio = defaults.double(forKey:"gaoyoujian.floating.verticalRatio")
         let railTarget = NSPoint(x:screen.visibleFrame.maxX-70,y:screen.visibleFrame.minY+160)
         panel.sendEvent(event(.leftMouseDragged,at:railTarget))
-        verify(panel.frame.size == railHitSize && panel.isPressed && !controller.isExpanded && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == railBeforeRatio, "native rail dragging keeps its small hit frame and defers persistence")
+        verify(panel.frame.size == railHitSize && panel.isPressed && !controller.isExpanded && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == railBeforeRatio, "native rail dragging retains its small frame and defers persistence")
         panel.sendEvent(event(.leftMouseUp,at:railTarget))
-        verify(!panel.isPressed && !panel.isVisible && !controller.isExpanded && !controller.isOnLeft && panel.frame.maxX == screen.visibleFrame.maxX && defaults.string(forKey:"gaoyoujian.floating.edge") == "right", "native rail release snaps and saves the right edge without opening a window")
+        verify(!panel.isPressed && !panel.isVisible && !controller.isExpanded && !controller.isOnLeft && panel.frame.maxX == screen.visibleFrame.maxX && defaults.string(forKey:"gaoyoujian.floating.edge") == "right", "native rail release snaps and saves the right edge without presenting the panel")
         let railSavedRatio = defaults.double(forKey:"gaoyoujian.floating.verticalRatio")
         controller.revealRequiresExit = false
-        controller.expand()
+        controller.expand(pointer:outside,now:base.addingTimeInterval(210))
         let restored = panel.frame
         controller.applyRestoredFrame(to:panel)
-        verify(!panel.isVisible && restored == panel.frame && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == railSavedRatio, "repeated layout preserves the native release height without presenting the panel")
+        verify(!panel.isVisible && restored == panel.frame && defaults.double(forKey:"gaoyoujian.floating.verticalRatio") == railSavedRatio, "repeated native layout preserves the release height")
+        controller.show()
+        verify(!panel.isVisible && !controller.isExpanded && panel.frame.size == railHitSize && defaults.bool(forKey:"gaoyoujian.floating.pinned") && defaults.bool(forKey:"gaoyoujian.floating.compact"), "manual enable returns directly to the rail and never consumes obsolete preferences")
     }
 }
 #endif
@@ -123,9 +150,8 @@ extension MailFloatingController {
                 for ratio in [0.0,0.15,0.5,1.0] {
                     let rail = MailFloatingController.edgeFrame(size:MailFloatingController.railHitSize,in:screen,isLeft:left,verticalRatio:ratio)
                     let card = MailFloatingController.edgeFrame(size:MailFloatingController.expandedSize,in:screen,isLeft:left,verticalRatio:ratio)
-                    let compact = MailFloatingController.edgeFrame(size:MailFloatingController.compactSize,in:screen,isLeft:left,verticalRatio:ratio)
-                    check(screen.contains(rail) && screen.contains(card) && screen.contains(compact), "all forms fit screen")
-                    check(card.contains(rail) && compact.contains(rail), "hover pointer stays inside revealed card")
+                    check(screen.contains(rail) && screen.contains(card), "all forms fit screen")
+                    check(card.contains(rail), "hover pointer stays inside revealed card")
                     check(left ? rail.minX == screen.minX : rail.maxX == screen.maxX, "rail touches remembered edge")
                     check(left ? card.minX == screen.minX : card.maxX == screen.maxX, "card shares rail edge")
                 }

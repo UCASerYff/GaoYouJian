@@ -27,9 +27,8 @@ struct MailFloatingView: View {
 
     private var card: some View {
         VStack(spacing: 10) {
-            header
-            if controller.isCompact { compactContent }
-            else { expandedContent }
+            dragArea
+            expandedContent
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -39,43 +38,10 @@ struct MailFloatingView: View {
         .tint(.indigo)
     }
 
-    private var header: some View {
-        HStack(spacing: 5) {
-            Spacer(minLength: 0)
-                .frame(height: 28)
-                .overlay(MailFloatingDragHandle().accessibilityHidden(true))
-                .help("拖动顶部空白移动悬浮窗，松手吸附左右边缘")
-            FloatingMailIcon(symbol: controller.isPinned ? "pin.fill" : "pin", title: controller.isPinned ? "取消固定" : "固定展开悬浮窗", active: controller.isPinned) {
-                controller.isPinned.toggle()
-            }
-            FloatingMailIcon(symbol: controller.isCompact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left", title: controller.isCompact ? "展开悬浮窗" : "切换紧凑模式") {
-                controller.isCompact.toggle()
-            }
-            Menu {
-                Toggle("显示邮件预览", isOn: $controller.showPreviews)
-                Toggle("固定展开悬浮窗", isOn: $controller.isPinned)
-                Toggle("紧凑模式", isOn: $controller.isCompact)
-                Menu("透明度") {
-                    ForEach([1.0, 0.9, 0.8, 0.65], id: \.self) { value in
-                        Button { controller.opacity = value } label: {
-                            if abs(controller.opacity - value) < 0.001 { Label("\(Int(value * 100))%", systemImage: "checkmark") }
-                            else { Text("\(Int(value * 100))%") }
-                        }
-                    }
-                }
-                Button("重置悬浮窗位置", action: controller.resetPosition)
-                Button("收起到屏幕边缘", action:controller.collapse)
-                Divider()
-                Button("悬浮窗设置…", action: controller.openSettings)
-                Button("隐藏悬浮窗", action: controller.hide)
-            } label: {
-                Image(systemName: "ellipsis").frame(width: 25, height: 28).contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .help("悬浮窗选项").accessibilityLabel("悬浮窗选项")
-            FloatingMailIcon(symbol: "xmark", title: "收起到屏幕边缘") { controller.collapse() }
-        }
-        .frame(height: 28)
+    private var dragArea: some View {
+        Color.clear.frame(maxWidth: .infinity).frame(height: 14)
+            .overlay(MailFloatingDragHandle().accessibilityHidden(true))
+            .help("拖动顶部空白移动悬浮窗，松手吸附左右边缘")
     }
 
     private var accountPicker: some View {
@@ -142,27 +108,6 @@ struct MailFloatingView: View {
         }
     }
 
-    private var compactContent: some View {
-        VStack(spacing: 9) {
-            HStack(alignment: .center, spacing: 7) {
-                Button { controller.openInbox(accountID: summary.selectedAccount?.id) } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(String(summary.unreadCount)).font(.system(size: 29, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text("缓存未读").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }.buttonStyle(.plain).help("打开收件箱")
-                Spacer(minLength: 0)
-                FloatingMailIcon(symbol: "arrow.clockwise", title: "同步邮箱") { sync() }.disabled(!canSync)
-                FloatingMailIcon(symbol: "square.and.pencil", title: "写邮件") { controller.compose(accountID: summary.selectedAccount?.id) }
-            }
-            HStack {
-                Text(summary.selectedAccount?.displayName ?? "全部邮箱").lineLimit(1)
-                Spacer(minLength: 8)
-                compactStatus
-            }.font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-    }
-
     private var statusBadge: some View {
         HStack(spacing: 4) {
             if syncing { ProgressView().controlSize(.mini) }
@@ -173,14 +118,6 @@ struct MailFloatingView: View {
         .foregroundStyle((summary.errorCount > 0 || store.problem != nil) && !syncing ? Color.orange : Color.indigo)
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(((summary.errorCount > 0 || store.problem != nil) && !syncing ? Color.orange : Color.indigo).opacity(0.08), in: Capsule())
-    }
-
-    @ViewBuilder private var compactStatus: some View {
-        if syncing { Text("正在同步…") }
-        else if summary.errorCount > 0 || store.problem != nil { Label("待检查", systemImage: "exclamationmark.circle").foregroundStyle(.orange) }
-        else { TimelineView(.periodic(from: .now, by: 60)) { context in
-            Text(MailFloatingSummary(library: store.library, messages: store.messages, accountID: selectedAccountID, now: context.date).latestSyncLabel)
-        } }
     }
 
     private var footer: some View {
@@ -199,7 +136,7 @@ struct MailFloatingView: View {
             Text("把邮箱带到桌面").font(.system(size: 13, weight: .semibold))
             Text("添加邮箱后，在这里查看未读数量和同步状态。学校、工作和生活，各有自己的位置。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("可拖动顶部移动，或切换紧凑模式。")
+            Text("拖动顶部空白可移动，鼠标移出后自动收成竖线。")
                 .font(.system(size: 10)).foregroundStyle(.tertiary)
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.indigo.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
@@ -211,7 +148,7 @@ struct MailFloatingView: View {
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             Text(summary.unreadCount > 0 ? "有 \(summary.unreadCount) 封缓存未读邮件，打开收件箱查看。" : "当前缓存中没有未读邮件。")
                 .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
-            Text("在右上角选项中开启预览，可显示最近三封邮件的发件人和主题。")
+            Text("在设置的外观页开启邮件预览，可显示最近三封邮件的发件人和主题。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if summary.errorCount > 0 || store.problem != nil { checkAccounts }
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -257,20 +194,5 @@ struct MailFloatingView: View {
             if let accountID { await store.sync(accountID) }
             else { await store.syncAll() }
         }
-    }
-}
-
-private struct FloatingMailIcon: View {
-    let symbol: String
-    let title: String
-    var active = false
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 11, weight: .medium))
-                .foregroundStyle(active ? Color.indigo : Color.secondary)
-                .frame(width: 25, height: 28).contentShape(Rectangle())
-                .background(active ? Color.indigo.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 7))
-        }.buttonStyle(.plain).help(title).accessibilityLabel(title)
     }
 }
