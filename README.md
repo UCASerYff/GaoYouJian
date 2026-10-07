@@ -1,12 +1,14 @@
 # 搞邮件
 
-原生 macOS 邮箱客户端，当前正式版本 V1.02。要求 Apple Silicon、macOS 14+。
+原生 macOS 邮箱客户端，当前正式版本 V1.03。要求 Apple Silicon、macOS 14+。
 
 功能包括 IMAP / SMTP 收发、Google / Microsoft OAuth、邮箱身份分类、手动关联网站与 App、历史记录、附件、草稿、资料备份和 CSV 导入导出。没有内置真实账户或共享 OAuth 客户端身份。
 
 [下载安装包](https://github.com/UCASerYff/GaoYouJian/releases/latest) · [源代码](https://github.com/UCASerYff/GaoYouJian)
 
-V1.02 将图标调整为黑色圆角底、白色竖排“邮件”。本版保留既有资料目录、偏好设置及钥匙串服务，资料格式不变，升级后直接读取原有记录。
+V1.03 新增原生悬浮窗：缓存未读数、邮箱切换、可选最近三封未读预览、收件箱 / 同步 / 写信快捷入口。鼠标离开后贴边收成细条，移入展开；支持固定展开、拖动吸附、紧凑模式、透明度和位置记忆。从菜单栏信封、工具栏或 ⌃⌘M 打开。默认隐藏邮件预览，展开悬浮窗不会将邮件标为已读。
+
+本版保留既有资料目录、偏好设置及钥匙串服务，资料格式不变，升级后直接读取原有记录。悬浮窗设置使用独立的本机偏好键，不改变原有资料格式。
 
 ## 文件
 
@@ -37,6 +39,8 @@ V1.02 将图标调整为黑色圆角底、白色竖排“邮件”。本版保�
 ./Tests/run_model_tests.sh
 ./Tests/run_oauth_tests.sh
 ./Tests/run_store_tests.sh
+./Tests/run_floating_tests.sh
+./Tests/run_floating_geometry.sh
 ```
 
 协议测试只向本机生成的 TLS IMAP / SMTP 测试服务发送模拟消息，不访问用户邮箱。模型测试编译 `Sources/Models.swift Sources/Storage.swift Tests/ModelTests.swift`；OAuth 测试编译 `Sources/Vault.swift Sources/OAuth.swift Tests/OAuthTests.swift`，测试不访问真实授权账户。相关测试可能需要本机 loopback 和 Security 服务权限。

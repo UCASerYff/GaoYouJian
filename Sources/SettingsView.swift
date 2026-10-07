@@ -3,6 +3,7 @@ import AppKit
 
 struct MailSettingsView: View {
     @ObservedObject var store: MailStore
+    @ObservedObject var floating: MailFloatingController
     @State private var preferences = MailPreferences()
     @State private var googleSecret = ""
     @State private var feedback: String?
@@ -46,8 +47,7 @@ struct MailSettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
             if let window = notification.object as? NSWindow, let identifier = window.identifier?.rawValue {
-                if identifier.contains("Settings") { settingsWindowActive = true }
-                else if identifier == "main" { settingsWindowActive = false }
+                settingsWindowActive = identifier.contains("Settings")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .mailSettingsTab)) { notification in
@@ -125,6 +125,25 @@ struct MailSettingsView: View {
                     Text("深色").tag("dark")
                 }
                 LabeledContent("版本", value: "V" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"))
+            }
+            Section("悬浮窗") {
+                Toggle("显示悬浮窗", isOn: Binding(get:{floating.isVisible},set:{$0 ? floating.show() : floating.hide()}))
+                Toggle("固定展开悬浮窗", isOn: $floating.isPinned)
+                Toggle("紧凑模式", isOn: $floating.isCompact)
+                Toggle("显示邮件预览", isOn: $floating.showPreviews)
+                Text("默认只显示本机缓存未读数。开启预览后显示最近三封未读邮件的发件人和主题；展开悬浮窗不会将邮件标为已读。")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("鼠标离开后收成屏幕边缘细条，靠近后展开；固定展开时保持可见。× 或 Esc 收起到边缘，关闭“显示悬浮窗”才完全隐藏。")
+                    .font(.callout).foregroundStyle(.secondary)
+                LabeledContent("透明度") {
+                    HStack {
+                        Slider(value:$floating.opacity,in:0.65...1).frame(width:210).accessibilityLabel("悬浮窗透明度")
+                        Text("\(Int(floating.opacity * 100))%").monospacedDigit().frame(width:45,alignment:.trailing)
+                    }
+                }
+                Button("重置悬浮窗位置", action:floating.resetPosition)
+                Text("从菜单栏信封或 ⌃⌘M 重新打开。悬浮窗的位置、显示状态和外观设置会自动保存。")
+                    .font(.callout).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

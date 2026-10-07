@@ -5,10 +5,12 @@ APP_VERSION="$(tr -d '\n' < "$PROJECT_DIR/VERSION")"
 if [[ ! "$APP_VERSION" =~ '^[0-9]+\.[0-9]{2}$' ]]; then print -u2 'VERSION 必须为 1.00 格式'; exit 1; fi
 BUILD_NUMBER="${APP_VERSION//./}"
 APP_ONLY=false
+APP_IDENTIFIER='com.gaoseries.GaoYouJian'
 if [[ $# -gt 0 ]]; then
   [[ $# == 2 && "$1" == '--app-only' ]] || { print -u2 '用法：build.sh [--app-only /绝对路径/搞邮件.app]'; exit 1; }
   [[ "$2" == /* && "$2" == *.app && ! -e "$2" && ! -L "$2" ]] || { print -u2 '测试应用目标必须是不存在的绝对 .app 路径'; exit 1; }
   APP_ONLY=true
+  APP_IDENTIFIER='com.gaoseries.GaoYouJian.Testing'
 fi
 STAGING="$(mktemp -d /private/tmp/gaoyoujian-build.XXXXXX)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -46,7 +48,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.gaoseries.GaoYouJian</string>
+<key>CFBundleIdentifier</key><string>$APP_IDENTIFIER</string>
 <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
 <key>CFBundleLocalizations</key><array><string>zh-Hans</string></array>
 <key>CFBundleName</key><string>搞邮件</string>
@@ -66,7 +68,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 xattr -cr "$APP"
-codesign --force --sign - --identifier com.gaoseries.GaoYouJian "$APP"
+codesign --force --sign - --identifier "$APP_IDENTIFIER" "$APP"
 codesign --verify --strict "$APP"
 if $APP_ONLY; then
   ditto "$APP" "$2"

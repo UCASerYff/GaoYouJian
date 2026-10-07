@@ -35,7 +35,7 @@ import UniformTypeIdentifiers
     var filteredAccounts: [MailAccount] { library.accounts.filter { identityFilter == nil || $0.identityID == identityFilter } }
     var filteredMessages: [CachedMessage] {
         let ids = Set(filteredAccounts.map(\.id)); let query = search.trimmingCharacters(in:.whitespacesAndNewlines)
-        return messages.filter { m in ids.contains(m.accountID) && (mailboxFilter == nil || m.accountID == mailboxFilter) && m.folder == folder && (query.isEmpty || [m.subject,m.from,m.to,m.body,m.preview].joined(separator:" ").localizedCaseInsensitiveContains(query)) }.sorted {$0.date > $1.date}
+        return messages.filter { m in ids.contains(m.accountID) && (mailboxFilter == nil || m.accountID == mailboxFilter) && (m.folder == folder || (m.folder.lowercased() == "inbox" && folder.lowercased() == "inbox")) && (query.isEmpty || [m.subject,m.from,m.to,m.body,m.preview].joined(separator:" ").localizedCaseInsensitiveContains(query)) }.sorted {$0.date > $1.date}
     }
     var filteredPlatforms: [PlatformRecord] {
         let ids = Set(filteredAccounts.map(\.id))
@@ -44,6 +44,15 @@ import UniformTypeIdentifiers
         }.sorted {$0.updatedAt > $1.updatedAt}
     }
     func account(_ id: UUID?) -> MailAccount? { library.accounts.first {$0.id == id} }
+    /// Navigation only: the floating panel never downloads or marks mail on its own.
+    func openCachedInbox(accountID: UUID? = nil, messageID: String? = nil) {
+        identityFilter = nil; search = ""; route = "inbox"; folder = "INBOX"
+        mailboxFilter = account(accountID)?.id
+        selectedMessageID = messageID.flatMap { id in filteredMessages.first(where:{$0.id == id})?.id }
+    }
+    func retainVisibleMessageSelection() {
+        if let id = selectedMessageID, !filteredMessages.contains(where:{$0.id == id}) { selectedMessageID = nil }
+    }
     func identity(_ id: UUID?) -> MailIdentity? { library.identities.first {$0.id == id} }
     func identityName(for account: MailAccount?) -> String { identity(account?.identityID)?.name ?? "未分类" }
     func commit(_ value: MailLibrary) throws { try storage.save(value); library = value }

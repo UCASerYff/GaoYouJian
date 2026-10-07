@@ -65,6 +65,20 @@ struct StoreTests {
         store.messages = [mapped]
         store.search = "正文"
         expect(store.filteredMessages.count == 1, "cached body remains searchable")
+        store.folder = "Sent"; store.search = "no-match"; store.identityFilter = UUID()
+        store.openCachedInbox(accountID:account.id,messageID:mapped.id)
+        expect(store.route == "inbox" && store.folder == "INBOX" && store.search.isEmpty && store.identityFilter == nil, "floating open clears stale main-window filters")
+        expect(store.mailboxFilter == account.id && store.selectedMessageID == mapped.id, "floating open selects the requested cached message")
+        store.retainVisibleMessageSelection()
+        expect(store.selectedMessageID == mapped.id, "mailbox change preserves a valid floating selection")
+        expect(store.messages[0].isRead == false && store.messages[0].loaded, "floating navigation does not mark or mutate cached mail")
+        store.folder = "Sent"; store.retainVisibleMessageSelection()
+        expect(store.selectedMessageID == nil, "real folder change clears a hidden selection")
+        store.openCachedInbox(accountID:UUID(),messageID:"missing")
+        expect(store.mailboxFilter == nil && store.selectedMessageID == nil, "removed mailbox and message safely fall back to inbox")
+        var lowercase = mapped; lowercase.folder = "inbox"; store.messages = [lowercase]
+        store.openCachedInbox(accountID:account.id,messageID:lowercase.id)
+        expect(store.selectedMessageID == lowercase.id && store.filteredMessages.count == 1, "INBOX case rules match floating summary")
         store.busy.insert(account.id)
         expectError("active account edit blocked") { try store.saveAccount(account, password: nil) }
         store.busy.remove(account.id)

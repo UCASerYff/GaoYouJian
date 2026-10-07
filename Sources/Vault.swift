@@ -3,7 +3,11 @@ import Security
 
 /// The only persistence layer for passwords, app passwords, and OAuth credentials.
 enum Vault {
+    #if DEBUG_TESTING
+    private static let service = "com.gaoseries.GaoYouJian.Testing.credentials"
+    #else
     private static let service = "com.gaoseries.GaoYouJian.credentials"
+    #endif
 
     static func save(_ value: String, for identifier: String) throws {
         try saveData(Data(value.utf8), for: identifier)

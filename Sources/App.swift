@@ -4,28 +4,47 @@ import SwiftUI
 @main @MainActor struct GaoYouJianApp: App {
     @NSApplicationDelegateAdaptor(MailAppDelegate.self) private var delegate
     @StateObject private var store: MailStore
+    @StateObject private var floating: MailFloatingController
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
     init() {
         var root: URL?
         #if DEBUG_TESTING
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("GaoYouJian-Testing-" + String(ProcessInfo.processInfo.processIdentifier),isDirectory:true)
         if let i = CommandLine.arguments.firstIndex(of:"--data-dir"), CommandLine.arguments.count > i+1 {
             root = URL(fileURLWithPath:CommandLine.arguments[i+1],isDirectory:true)
         }
         #endif
-        _store = StateObject(wrappedValue:MailStore(root:root))
+        let mailStore = MailStore(root:root)
+        _store = StateObject(wrappedValue:mailStore)
+        var floatingDefaults = UserDefaults.standard
+        #if DEBUG_TESTING
+        if let root { floatingDefaults = UserDefaults(suiteName:"GaoYouJian.FloatingTest." + root.lastPathComponent) ?? .standard }
+        #endif
+        _floating = StateObject(wrappedValue:MailFloatingController(store:mailStore, defaults:floatingDefaults))
         MailAppearance.current.apply()
     }
 
     var body: some Scene {
         Window("搞邮件 V" + (Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "?"),id:"main") {
-            RootView(store:store)
+            RootView(store:store,showFloating:{floating.show()})
                 .frame(minWidth:1040,minHeight:720)
                 .modifier(MailWindowToolbarBackground())
                 .onAppear {
                     delegate.store = store
                     delegate.reopenMainWindow = {openWindow(id:"main"); Self.activateMainWindow()}
+                    floating.onOpenInbox = {accountID,messageID in
+                        store.openCachedInbox(accountID:accountID,messageID:messageID)
+                        showMain()
+                    }
+                    floating.onCompose = {accountID in showMain(); store.newDraft(accountID:accountID)}
+                    floating.onOpenSettings = {
+                        NSApp.activate(ignoringOtherApps:true)
+                        openSettings()
+                        DispatchQueue.main.async {NotificationCenter.default.post(name:.mailSettingsTab,object:"appearance")}
+                    }
+                    floating.restoreIfNeeded()
                 }
                 .task {await store.syncAll()}
                 .onReceive(NotificationCenter.default.publisher(for:Notification.Name("GaoYouJian.showWindow"))) { _ in
@@ -44,6 +63,8 @@ import SwiftUI
                 Button("显示 / 隐藏侧边栏") {showMain(); DispatchQueue.main.async {NotificationCenter.default.post(name:.mailToggleSidebar,object:nil)}}
                     .keyboardShortcut("s",modifiers:[.command,.control])
                 Button("显示主窗口") {showMain()}.keyboardShortcut("0")
+                Button(floating.isVisible ? "隐藏悬浮窗" : "显示悬浮窗") {floating.toggle()}
+                    .keyboardShortcut("m",modifiers:[.command,.control])
             }
             CommandMenu("数据") {
                 Button("导出资料备份…",action:store.exportBackup)
@@ -60,7 +81,7 @@ import SwiftUI
                 }
             }
         }
-        Settings {MailSettingsView(store:store).frame(width:820,height:740)}
+        Settings {MailSettingsView(store:store,floating:floating).frame(width:820,height:740)}
     }
 
     private func showMain() {openWindow(id:"main"); Self.activateMainWindow()}
@@ -69,6 +90,7 @@ import SwiftUI
         if let window = NSApp.windows.first(where:{$0.identifier?.rawValue == "main"}) {
             if window.isMiniaturized {window.deminiaturize(nil)}
             window.makeKeyAndOrderFront(nil)
+            if let sheet = window.attachedSheet {sheet.makeKeyAndOrderFront(nil)}
         }
     }
 }

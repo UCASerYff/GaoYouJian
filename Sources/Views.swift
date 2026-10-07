@@ -33,6 +33,7 @@ struct EmptyMailView: View {
 
 struct RootView: View {
     @ObservedObject var store: MailStore
+    var showFloating: () -> Void = {}
     @Environment(\.openSettings) private var openSettings
     @SceneStorage("gaoyoujian.sidebarHidden") private var sidebarHidden = false
     @FocusState private var searchFocused: Bool
@@ -78,8 +79,7 @@ struct RootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for:NSWindow.didBecomeKeyNotification)) {note in
             guard let window = note.object as? NSWindow else {return}
-            if window.identifier?.rawValue == "main" {mainWindowActive = true}
-            else if window.identifier?.rawValue.contains("Settings") == true {mainWindowActive = false}
+            mainWindowActive = window.identifier?.rawValue == "main"
         }
         .task(id:store.notice) {
             guard let current = store.notice else {return}
@@ -186,6 +186,7 @@ struct RootView: View {
     private var toolbarActions: some View {
         HStack(spacing:12) {
             if !store.busy.isEmpty {ProgressView().controlSize(.small)}
+            Button(action:showFloating) {Label("显示悬浮窗",systemImage:"rectangle.on.rectangle")}.help("显示悬浮窗（⌃⌘M）")
             Button {Task {await store.syncAll()}} label:{Label("同步所有邮箱",systemImage:"arrow.clockwise")}
                 .help("同步所有已连接邮箱").disabled(!store.busy.isEmpty || !store.library.accounts.contains(where:{$0.enabled}))
             Button {store.newDraft()} label:{Label("写邮件",systemImage:"square.and.pencil")}.help("写邮件（⌘N）")
@@ -350,9 +351,16 @@ struct InboxView: View {
                     else {EmptyMailView(icon:"envelope.open",title:"选一封邮件，慢慢读",detail:"邮件正文、附件和回复会显示在这里。") .frame(minWidth:350)}
                 }
             }
+            .onAppear {if let id = store.selectedMessageID {Task {await store.loadMessage(id)}}}
             .onChange(of:store.selectedMessageID) {_,id in showHTML = false; if let id {Task {await store.loadMessage(id)}}}
-            .onChange(of:store.mailboxFilter) {_,id in store.folder = "INBOX"; store.selectedMessageID = nil; if let id {Task {await store.sync(id)}}}
-            .onChange(of:store.folder) {_,folder in store.selectedMessageID = nil; if let id = store.mailboxFilter {Task {await store.sync(id,folder:folder)}}}
+            .onChange(of:store.mailboxFilter) {_,id in
+                store.folder = "INBOX"; store.retainVisibleMessageSelection()
+                if let id {Task {await store.sync(id)}}
+            }
+            .onChange(of:store.folder) {_,folder in
+                store.retainVisibleMessageSelection()
+                if let id = store.mailboxFilter {Task {await store.sync(id,folder:folder)}}
+            }
         }
     }
     private func messageDetail(_ m: CachedMessage) -> some View {
