@@ -1,0 +1,10 @@
+搞邮件 V1.02 图标设计
+
+最终资产：AppIcon.png（1254 × 1254，RGBA，透明外围）、AppIcon.icns。
+使用内置 imagegen（imagegen 技能），未使用 CLI/API fallback。
+用户要求将现有白底黑字改成黑底白字。
+风格：纯黑圆角底，白色手写毛笔书法，简体“邮”在上、“件”在下，外围透明。
+保留现有字形、竖排布局与笔触。MakeIcon.swift 只缩放并封装 ICNS。
+
+完整编辑提示词：
+Use case: precise-object-edit. Asset type: final macOS app icon for 搞邮件. Input image 1 is the edit target. Change ONLY its colors: replace the opaque white rounded square tile with pure black, and replace the black hand-brushed simplified Chinese 邮 (above) and 件 (below) with pure white. Preserve the exact calligraphy stroke shapes, brush texture, glyphs, positions, proportions, vertically centered one-column layout, and the rounded square's size and corner shape. Keep actual transparent pixels outside the tile. Clean smooth antialiased tile edge without speckles. No shadow, border, glow, extra text or decorations. Square image, transparent exterior, opaque black tile, white calligraphy. Return the final icon ready for use.

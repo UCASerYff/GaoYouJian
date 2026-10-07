@@ -1,0 +1,31 @@
+搞邮件 V1.02：Gmail / Microsoft OAuth 配置
+
+本应用提供浏览器授权、PKCE、安全回调、身份验证和令牌自动刷新，但没有附带 Google / Microsoft 注册客户端 ID。要使用 OAuth，请由你或组织管理员为搞邮件注册应用，然后在应用设置中填写对应 ID。不能使用其他客户端的 ID 冒充其身份。填写客户端 ID 不等于已连接邮箱，仍须完成授权并测试收发。
+
+Google / Gmail
+1. 在 Google Cloud Console 为自己的项目配置 OAuth 同意屏幕。个人测试阶段，将自己的 Google 账号加入测试用户。
+2. 创建“桌面应用”类型的 OAuth 客户端（不是 Web、iOS 或 Android 类型）。将客户端 ID 填入搞邮件的 Google 客户端 ID。若下载配置包含 client_secret，将其填入 Google 客户端密钥；该值仅保存在系统钥匙串。
+3. 本应用请求 https://mail.google.com/（IMAP/SMTP 所需邮件范围）、openid、email。浏览器通过随机端口的 http://127.0.0.1:<port>/ 回到本机，使用 S256 PKCE。桌面客户端支持此回调，无需固定一个端口。
+4. 添加邮箱时使用 Google 的主登录邮箱地址，点击浏览器授权，选择同一账号。授权完成后测试连接。别名不应代替主登录地址；同一邮箱的别名管理可另行配置。
+5. Google 对测试发布状态及敏感/受限权限有额外限制，测试用户授权可能需要定期重新同意。正式公开发行通常需要验证；本版本不代替开发者完成该流程。
+6. 若你的 Google 账号允许应用专用密码，可选择普通 IMAP/SMTP 配置。不要使用网页登录密码代替客户端专用凭据。
+
+Microsoft / Outlook / Hotmail / Microsoft 365
+1. 在 Microsoft Entra 管理中心创建自己的应用注册。若需兼容个人 Outlook 与多个组织账号，选择支持组织目录与个人 Microsoft 账号的类型；企业内部使用可按管理员要求限制目录。
+2. 在身份验证设置添加“移动和桌面应用”平台，注册 http://localhost 作为系统浏览器重定向 URI。搞邮件实际使用 http://localhost:<随机端口>/；微软为 localhost 回调忽略端口匹配。不得配置成 Web 客户端后使用服务器密钥流程。
+3. 在 Office 365 Exchange Online 中添加委托权限 IMAP.AccessAsUser.All、SMTP.Send；授权还请求 offline_access、openid、profile、email。按组织政策完成所需管理员同意。
+4. 将 Application (client) ID 填入搞邮件设置。租户默认 common；组织专用应用可填写租户 ID。此桌面公共客户端不需要 Microsoft client_secret。
+5. 使用实际邮箱主登录地址授权。应用验证服务商签名、受众、有效期、nonce 和返回账号；授权后 IMAP/SMTP 登录进一步验证该账号是否可访问邮箱。授权成功不代表组织已开放 IMAP 或 SMTP AUTH；管理员可能还需启用相关服务。
+
+凭据与撤销
+授权令牌、刷新令牌、密码只存于 macOS 钥匙串。身份和关联平台数据、备份、源码及日志不包含它们。移除本地授权会删除本机保存的令牌，不会主动更改其他设备的登录；需要彻底撤销应用授权时，请到 Google / Microsoft 官方账号安全页面移除应用访问权限。
+
+官方资料
+https://developers.google.com/identity/protocols/oauth2/native-app
+https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration
+https://developers.google.com/workspace/gmail/imap/xoauth2-protocol
+https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow
+https://learn.microsoft.com/en-us/entra/identity-platform/reply-url
+https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth
+
+说明依据：2026-10-07 查询的官方文档。未使用真实个人邮箱进行自动发信测试。
