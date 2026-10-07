@@ -131,7 +131,7 @@ struct MailSettingsView: View {
                 Toggle("显示邮件预览", isOn: $floating.showPreviews)
                 Text("默认只显示本机缓存未读数。开启预览后显示最近三封未读邮件的发件人和主题；展开悬浮窗不会将邮件标为已读。")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("平时只显示屏幕边缘竖线；鼠标移入后展开，移出后自动收起。拖动及选择邮箱期间保持展开，Esc 可立即收起；关闭“显示悬浮窗”才完全隐藏。")
+                Text("平时只显示屏幕边缘竖线；鼠标移入后展开，移出后快速收起，点击其他位置立即收起。拖动和本悬浮窗的邮箱菜单操作期间保持展开，Esc 可立即收起；关闭“显示悬浮窗”才完全隐藏。")
                     .font(.callout).foregroundStyle(.secondary)
                 LabeledContent("透明度") {
                     HStack {

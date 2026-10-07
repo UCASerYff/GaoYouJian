@@ -8,9 +8,12 @@ cleanup() {
     local native_test_suite
     IFS= read -r native_test_suite < "$TEST_TMP/native-suite.txt"
     if [[ "$native_test_suite" =~ ^GaoYouJian\.HiddenNativeTest\.[A-Fa-f0-9-]{36}$ ]]; then
-      # CFPreferences may flush an empty plist after the test's removePersistentDomain call.
-      sleep 0.25
-      rm -f -- "$HOME/Library/Preferences/$native_test_suite.plist"
+      # CFPreferences may flush an empty plist several seconds after the test process exits.
+      # Keep removing only this run's UUID domain through that deferred flush window.
+      for _ in {1..12}; do
+        sleep 0.5
+        rm -f -- "$HOME/Library/Preferences/$native_test_suite.plist"
+      done
     fi
   fi
   rm -rf -- "$TEST_TMP"

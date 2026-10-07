@@ -38,6 +38,9 @@ private final class MailFloatingPanel: NSPanel {
     var dismiss: (() -> Void)?
     var allowsKey = true
     let dragHandles = NSHashTable<NSView>.weakObjects()
+    let menuRegions = NSHashTable<NSView>.weakObjects()
+    var containsVisiblePoint: ((NSPoint) -> Bool)?
+    var onMouseDown: ((NSEvent) -> Void)?
     var onPressChanged: ((Bool) -> Void)?
     var onDrag: ((NSPoint, NSSize) -> Void)?
     var onRelease: ((Bool) -> Void)?
@@ -54,6 +57,7 @@ private final class MailFloatingPanel: NSPanel {
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown:
+            onMouseDown?(event)
             if isGrabEvent(event) {
                 dragSession.begin(pointer: convertPoint(toScreen: event.locationInWindow), frame: frame)
                 onPressChanged?(true)
@@ -80,8 +84,16 @@ private final class MailFloatingPanel: NSPanel {
 
     func isGrabEvent(_ event: NSEvent) -> Bool {
         guard event.type == .leftMouseDown, !event.modifierFlags.contains(.control) else { return false }
-        if !allowsKey { return frame.contains(convertPoint(toScreen: event.locationInWindow)) }
+        let pointer = convertPoint(toScreen: event.locationInWindow)
+        guard containsVisiblePoint?(pointer) ?? frame.contains(pointer) else { return false }
+        if !allowsKey { return true }
         return dragHandles.allObjects.contains { view in
+            view.window === self && !view.isHidden && view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+        }
+    }
+
+    func isMailboxMenuEvent(_ event: NSEvent) -> Bool {
+        event.type == .leftMouseDown && menuRegions.allObjects.contains { view in
             view.window === self && !view.isHidden && view.bounds.contains(view.convert(event.locationInWindow, from: nil))
         }
     }
@@ -92,6 +104,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     @Published private(set) var isVisible = false
     @Published private(set) var isExpanded = false
     @Published private(set) var isOnLeft = false
+    @Published private(set) var expandedHeight: CGFloat = 280
     @Published var showPreviews: Bool {
         didSet { defaults.set(showPreviews, forKey: Key.previews) }
     }
@@ -120,17 +133,26 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     private var verticalRatio: Double
     private var pointerTimer: Timer?
     private var lastInsideAt = Date()
+    private var outsideSince: Date?
     private var trackingMenus = Set<ObjectIdentifier>()
-    private var externalMenuOpen = false
+    private var rootTrackingMenu: ObjectIdentifier?
+    private var pendingMailboxMenuUntil: Date?
+    private var eventMonitors: [Any] = []
+    private var requestedExpandedHeight: CGFloat = 280
     private var revealRequiresExit = false
     private var hoverStartedAt: Date?
     #if DEBUG_TESTING
     private var suppressPanelPresentationForTesting = false
+    // Cursor-safe QA input does not move the real pointer. Pause only polling collapse for layout inspection.
+    private let isLayoutPreviewForTesting = ProcessInfo.processInfo.arguments.contains("--layout-preview")
     #endif
     private static let margin: CGFloat = 12
-    static let expandedSize = NSSize(width: 340, height: 430)
+    static let expandedSize = NSSize(width: 340, height: 280)
     static let railHitSize = NSSize(width: 20, height: 104)
     static let railVisualSize = NSSize(width: 6, height: 88)
+    static let cardCornerRadius: CGFloat = 18
+    private static let pointerInterval: TimeInterval = 0.04
+    private static let leaveDelay: TimeInterval = 0.08
 
     private enum Key {
         static let visible = "gaoyoujian.floating.visible"
@@ -159,7 +181,11 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         NotificationCenter.default.addObserver(self, selector: #selector(menuTrackingEnded(_:)), name: NSMenu.didEndTrackingNotification, object: nil)
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        pointerTimer?.invalidate()
+        eventMonitors.forEach { NSEvent.removeMonitor($0) }
+    }
 
     /// Call after the app's main-window and Settings actions have been connected.
     func restoreIfNeeded() {
@@ -178,6 +204,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         isExpanded = false
         revealRequiresExit = false
         hoverStartedAt = nil
+        outsideSince = nil
         window.allowsKey = false
         window.isMovableByWindowBackground = false
         window.hasShadow = false
@@ -188,6 +215,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         presentPanel(window)
         lastInsideAt = Date()
         startPointerWatcher()
+        startMouseObservers()
         savedVisible = true
         defaults.set(true, forKey: Key.visible)
     }
@@ -196,6 +224,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         panel?.cancelInteraction()
         panel?.orderOut(nil)
         stopPointerWatcher()
+        stopMouseObservers()
         isVisible = false
         isExpanded = false
         revealRequiresExit = false
@@ -211,23 +240,24 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     private func expand(pointer: NSPoint, now: Date) {
         guard isVisible, let panel, !panel.isPressed else { return }
-        if revealRequiresExit && panel.frame.insetBy(dx: -2, dy: -2).contains(pointer) { return }
+        if revealRequiresExit && panel.frame.contains(pointer) { return }
         revealRequiresExit = false
         hoverStartedAt = nil
         lastInsideAt = now
+        outsideSince = nil
         guard !isExpanded else { return }
         isExpanded = true
         panel.allowsKey = true
         panel.isMovableByWindowBackground = false
         panel.hasShadow = true
-        panel.contentView?.layer?.cornerRadius = 18
+        panel.contentView?.layer?.cornerRadius = Self.cardCornerRadius
         applyRestoredFrame(to: panel)
         presentPanel(panel)
     }
 
     func railPointerExited() {
         hoverStartedAt = nil
-        guard let panel, !panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation) else { return }
+        guard let panel, !panel.frame.contains(NSEvent.mouseLocation) else { return }
         revealRequiresExit = false
     }
 
@@ -250,13 +280,22 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         applyRestoredFrame(to: panel)
         hoverStartedAt = nil
         lastInsideAt = now
-        revealRequiresExit = panel.frame.insetBy(dx: -2, dy: -2).contains(pointer)
+        outsideSince = nil
+        clearMenuTracking()
+        revealRequiresExit = panel.frame.contains(pointer)
         presentPanel(panel)
     }
 
-    func setMenuOpen(_ open: Bool) {
-        externalMenuOpen = open
-        lastInsideAt = Date()
+    /// The natural SwiftUI card height never includes the collapsed rail.
+    func updateExpandedHeight(_ ideal: CGFloat) {
+        guard ideal.isFinite, ideal > 0 else { return }
+        let requested = ceil(ideal)
+        guard requestedExpandedHeight != requested else { return }
+        requestedExpandedHeight = requested
+        guard panel?.isPressed != true else { return }
+        let previousHeight = expandedHeight
+        refreshExpandedHeight()
+        if expandedHeight != previousHeight, isExpanded, let panel { applyRestoredFrame(to: panel) }
     }
 
     /// Called after the native mouse-up; moving the card and persisting its destination are separate operations.
@@ -356,23 +395,106 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     @objc private func willTerminate() {
         persistPosition()
         stopPointerWatcher()
+        stopMouseObservers()
         // Do not call hide(): a visible panel should return on the next launch.
         defaults.set(isVisible, forKey: Key.visible)
     }
 
     @objc private func menuTrackingBegan(_ notification: Notification) {
-        guard isVisible, let menu = notification.object as? NSMenu else { return }
-        trackingMenus.insert(ObjectIdentifier(menu))
+        guard isVisible, isExpanded, let menu = notification.object as? NSMenu else { return }
+        var ancestor = menu.supermenu
+        var belongsToMailbox = false
+        while let parent = ancestor {
+            if trackingMenus.contains(ObjectIdentifier(parent)) { belongsToMailbox = true; break }
+            ancestor = parent.supermenu
+        }
+        let isArmed = pendingMailboxMenuUntil.map { Date() <= $0 } ?? false
+        guard isArmed || belongsToMailbox else { return }
+        let identifier = ObjectIdentifier(menu)
+        if rootTrackingMenu == nil { rootTrackingMenu = identifier }
+        trackingMenus.insert(identifier)
+        pendingMailboxMenuUntil = nil
+        outsideSince = nil
     }
 
     @objc private func menuTrackingEnded(_ notification: Notification) {
-        if let menu = notification.object as? NSMenu { trackingMenus.remove(ObjectIdentifier(menu)) }
-        lastInsideAt = Date()
+        guard let menu = notification.object as? NSMenu else { return }
+        let identifier = ObjectIdentifier(menu)
+        if rootTrackingMenu == identifier { clearMenuTracking() }
+        else { trackingMenus.remove(identifier) }
+        outsideSince = nil
+    }
+
+    private func clearMenuTracking() {
+        trackingMenus.removeAll()
+        rootTrackingMenu = nil
+        pendingMailboxMenuUntil = nil
+    }
+
+    private func notePanelMouseDown(_ event: NSEvent) {
+        guard isVisible, isExpanded, let panel else { return }
+        // Only the registered mailbox picker can arm the subsequent AppKit menu notification.
+        pendingMailboxMenuUntil = panel.isMailboxMenuEvent(event) ? Date().addingTimeInterval(0.8) : nil
+    }
+
+    private func startMouseObservers() {
+        #if DEBUG_TESTING
+        if suppressPanelPresentationForTesting { return }
+        #endif
+        guard eventMonitors.isEmpty else { return }
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .leftMouseUp]
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            MainActor.assumeIsolated { _ = self?.observeLocalMouseEvent(event) }
+            return event
+        }) { eventMonitors.append(local) }
+        // Global mouse-only observation needs no Accessibility permission and never changes the source event.
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.observeMouseEvent(event, isGlobal: true) }
+        }) { eventMonitors.append(global) }
+    }
+
+    private func stopMouseObservers() {
+        eventMonitors.forEach { NSEvent.removeMonitor($0) }
+        eventMonitors.removeAll()
+    }
+
+    private func observeLocalMouseEvent(_ event: NSEvent) -> NSEvent {
+        observeMouseEvent(event, isGlobal: false)
+        return event
+    }
+
+    private func observeMouseEvent(_ event: NSEvent, isGlobal: Bool) {
+        guard isVisible, let panel else { return }
+        let belongsToPanel = !isGlobal && event.window === panel
+        let pointer = belongsToPanel ? panel.convertPoint(toScreen: event.locationInWindow) : NSEvent.mouseLocation
+        if event.type == .leftMouseUp {
+            // A release delivered elsewhere must not leave our previous gesture latched forever.
+            if !belongsToPanel, panel.isPressed {
+                panel.cancelInteraction()
+                snapToEdge()
+                let previousHeight = expandedHeight
+                refreshExpandedHeight()
+                if expandedHeight != previousHeight, isExpanded { applyRestoredFrame(to: panel) }
+                outsideSince = nil
+            }
+            return
+        }
+        guard [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) else { return }
+        if belongsToPanel && containsVisiblePoint(pointer) { notePanelMouseDown(event); return }
+        // Menu item events can be in an AppKit menu window or have no window. They are a continuation
+        // of our picker, whereas a normal app window or any other app is an outside click.
+        if !isGlobal && !belongsToPanel && !trackingMenus.isEmpty,
+           event.window == nil || event.window?.styleMask.contains(.titled) == false { return }
+        panel.cancelInteraction()
+        clearMenuTracking()
+        hoverStartedAt = nil
+        revealRequiresExit = false
+        collapse(pointer: pointer, now: Date())
     }
 
     private func startPointerWatcher() {
         guard pointerTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.pointerInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkPointer() }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -382,20 +504,20 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     private func stopPointerWatcher() {
         pointerTimer?.invalidate()
         pointerTimer = nil
-        trackingMenus.removeAll()
-        externalMenuOpen = false
+        clearMenuTracking()
         hoverStartedAt = nil
+        outsideSince = nil
     }
 
     private func checkPointer() {
-        evaluatePointer(pointer: NSEvent.mouseLocation, now: Date(), inputActive: NSEvent.pressedMouseButtons != 0, modalActive: NSApp.modalWindow != nil)
+        evaluatePointer(pointer: NSEvent.mouseLocation, now: Date())
     }
 
-    private func evaluatePointer(pointer: NSPoint, now: Date, inputActive: Bool, modalActive: Bool) {
+    private func evaluatePointer(pointer: NSPoint, now: Date) {
         guard isVisible, let panel else { return }
-        guard !panel.isPressed else { hoverStartedAt = nil; lastInsideAt = now; return }
-        let inside = panel.frame.insetBy(dx: -2, dy: -2).contains(pointer)
-        let interactionActive = externalMenuOpen || !trackingMenus.isEmpty || inputActive || modalActive
+        guard !panel.isPressed else { hoverStartedAt = nil; outsideSince = nil; return }
+        let inside = containsVisiblePoint(pointer)
+        let interactionActive = !trackingMenus.isEmpty
         if !isExpanded {
             if interactionActive { hoverStartedAt = nil; return }
             if revealRequiresExit {
@@ -409,9 +531,19 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         }
         if inside || interactionActive {
             lastInsideAt = now
+            outsideSince = nil
             return
         }
-        if now.timeIntervalSince(lastInsideAt) > 0.45 { collapse(pointer: pointer, now: now) }
+        #if DEBUG_TESTING
+        if isLayoutPreviewForTesting { outsideSince = nil; return }
+        #endif
+        if outsideSince == nil { outsideSince = now }
+        if let outsideSince, now.timeIntervalSince(outsideSince) >= Self.leaveDelay { collapse(pointer: pointer, now: now) }
+    }
+
+    private func containsVisiblePoint(_ point: NSPoint) -> Bool {
+        guard let panel else { return false }
+        return isExpanded ? Self.roundedCardContains(point, in: panel.frame) : panel.frame.contains(point)
     }
 
     private func ensurePanel() -> MailFloatingPanel {
@@ -420,9 +552,17 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         window.title = "搞邮件 · 悬浮窗"
         window.identifier = NSUserInterfaceItemIdentifier("GaoYouJian.Floating")
         window.delegate = self
-        window.dismiss = { [weak self] in self?.collapse() }
+        window.dismiss = { [weak self] in
+            guard let self else { return }
+            self.panel?.cancelInteraction()
+            self.clearMenuTracking()
+            self.collapse()
+        }
+        window.containsVisiblePoint = { [weak self] point in self?.containsVisiblePoint(point) ?? false }
+        window.onMouseDown = { [weak self] event in self?.notePanelMouseDown(event) }
         window.onPressChanged = { [weak self] _ in
             self?.hoverStartedAt = nil
+            self?.outsideSince = nil
             self?.lastInsideAt = Date()
         }
         window.onDrag = { [weak self] pointer, offset in self?.movePanel(pointer: pointer, grabOffset: offset) }
@@ -430,10 +570,13 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
             guard let self else { return }
             if dragged { self.snapToEdge() }
             else if !self.isExpanded { self.revealRequiresExit = false; self.expand() }
+            self.refreshExpandedHeight()
+            if self.isExpanded, let panel = self.panel { self.applyRestoredFrame(to: panel) }
             if !self.isExpanded, let panel = self.panel {
-                self.revealRequiresExit = panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+                self.revealRequiresExit = panel.frame.contains(NSEvent.mouseLocation)
             }
             self.hoverStartedAt = nil
+            self.outsideSince = nil
             self.lastInsideAt = Date()
         }
         window.isFloatingPanel = true
@@ -448,15 +591,23 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
         window.level = .floating
         window.alphaValue = opacity
         let hosting = MailFloatingHostingView(rootView: MailFloatingView(store: store, controller: self))
+        hosting.onPointerChanged = { [weak self] pointer in self?.evaluatePointer(pointer: pointer, now: Date()) }
         hosting.wantsLayer = true
-        hosting.layer?.cornerRadius = isExpanded ? 18 : 0
+        hosting.layer?.cornerRadius = isExpanded ? Self.cardCornerRadius : 0
         hosting.layer?.masksToBounds = true
         window.contentView = hosting
         panel = window
         return window
     }
 
-    private var desiredSize: NSSize { isExpanded ? Self.expandedSize : Self.railHitSize }
+    private var desiredSize: NSSize { isExpanded ? NSSize(width: Self.expandedSize.width, height: expandedHeight) : Self.railHitSize }
+
+    private func refreshExpandedHeight(for screen: NSScreen? = nil) {
+        guard panel?.isPressed != true else { return }
+        let available = (screen ?? preferredScreen())?.visibleFrame.height ?? 420
+        let height = Self.safeExpandedHeight(requestedExpandedHeight, availableHeight: available)
+        if expandedHeight != height { expandedHeight = height }
+    }
 
     private func presentPanel(_ panel: MailFloatingPanel) {
         #if DEBUG_TESTING
@@ -469,6 +620,7 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
     private func applyRestoredFrame(to panel: NSWindow) {
         guard (panel as? MailFloatingPanel)?.isPressed != true else { return }
         guard let screen = preferredScreen() else { return }
+        refreshExpandedHeight(for: screen)
         let connectedDisplay = Self.displayIdentifier(screen)
         if rememberedDisplay != connectedDisplay {
             rememberedDisplay = connectedDisplay
@@ -517,6 +669,20 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 
     static func safeOpacity(_ value: Double) -> Double { value.isFinite ? min(max(value, 0.65), 1) : 1 }
 
+    static func safeExpandedHeight(_ ideal: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        let limit = availableHeight.isFinite ? min(max(availableHeight, 1), 420) : 420
+        return min(max(ideal.isFinite ? ceil(ideal) : 280, 1), limit)
+    }
+
+    /// Match the card's circular 18 pt clipping, including the transparent corner cutouts.
+    static func roundedCardContains(_ point: NSPoint, in frame: NSRect) -> Bool {
+        guard point.x.isFinite, point.y.isFinite, frame.contains(point) else { return false }
+        let radius = min(cardCornerRadius, frame.width / 2, frame.height / 2)
+        let x = min(max(point.x, frame.minX + radius), frame.maxX - radius)
+        let y = min(max(point.y, frame.minY + radius), frame.maxY - radius)
+        return pow(point.x - x, 2) + pow(point.y - y, 2) <= radius * radius
+    }
+
     static func nearestEdgeIsLeft(for frame: NSRect, in visible: NSRect) -> Bool { frame.midX < visible.midX }
 
     /// Dragging follows the pointer freely; edge snapping is intentionally deferred until mouse-up.
@@ -552,7 +718,20 @@ final class MailFloatingController: NSObject, ObservableObject, NSWindowDelegate
 }
 
 private final class MailFloatingHostingView<Content: View>: NSHostingView<Content> {
+    var onPointerChanged: ((NSPoint) -> Void)?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner as AnyObject? === self { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { reportPointer(event); super.mouseEntered(with: event) }
+    override func mouseExited(with event: NSEvent) { reportPointer(event); super.mouseExited(with: event) }
+    override func mouseMoved(with event: NSEvent) { reportPointer(event); super.mouseMoved(with: event) }
+    private func reportPointer(_ event: NSEvent) {
+        guard let window else { return }
+        onPointerChanged?(window.convertPoint(toScreen: event.locationInWindow))
+    }
 }
 
 /// Register the empty header area; action buttons remain outside these native grab regions.
@@ -565,5 +744,16 @@ struct MailFloatingDragHandle: NSViewRepresentable {
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
         func registerDragArea() { (window as? MailFloatingPanel)?.dragHandles.add(self) }
+    }
+}
+
+/// Registration alone does not intercept the picker's buttons or AppKit menu events.
+struct MailFloatingMenuRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> MenuRegionView { MenuRegionView() }
+    func updateNSView(_ view: MenuRegionView, context: Context) { view.registerMenuArea() }
+    final class MenuRegionView: NSView {
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); registerMenuArea() }
+        func registerMenuArea() { (window as? MailFloatingPanel)?.menuRegions.add(self) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

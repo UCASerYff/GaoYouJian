@@ -26,20 +26,36 @@ struct MailFloatingView: View {
     }
 
     private var card: some View {
-        VStack(spacing: 10) {
-            dragArea
-            expandedContent
+        ScrollView(.vertical) {
+            VStack(spacing: 6) {
+                dragArea
+                expandedContent
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .top)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: MailFloatingHeightPreferenceKey.self, value: geometry.size.height)
+                }
+            }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity)
+        .frame(height: controller.expandedHeight)
         .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.primary.opacity(0.09), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .circular))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .circular).stroke(Color.primary.opacity(0.09), lineWidth: 1))
         .tint(.indigo)
+        .onPreferenceChange(MailFloatingHeightPreferenceKey.self) { height in
+            guard height.isFinite, height > 0 else { return }
+            let ideal = ceil(height)
+            controller.updateExpandedHeight(ideal)
+        }
     }
 
     private var dragArea: some View {
-        Color.clear.frame(maxWidth: .infinity).frame(height: 14)
+        Color.clear.frame(maxWidth: .infinity).frame(height: 8)
             .overlay(MailFloatingDragHandle().accessibilityHidden(true))
             .help("拖动顶部空白移动悬浮窗，松手吸附左右边缘")
     }
@@ -63,15 +79,16 @@ struct MailFloatingView: View {
             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .background(MailFloatingMenuRegion())
         .accessibilityLabel("切换悬浮窗邮箱")
     }
 
     private var expandedContent: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             accountPicker
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(String(summary.unreadCount)).font(.system(size: 46, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text(String(summary.unreadCount)).font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
                     Text("缓存未读 · 收件箱").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -81,18 +98,15 @@ struct MailFloatingView: View {
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
-            .frame(height: 75)
+            .frame(height: 64)
             .padding(.horizontal, 4)
             Divider().opacity(0.5)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    if summary.accounts.isEmpty { emptyAccounts }
-                    else if controller.showPreviews { previews }
-                    else { privateSummary }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                if summary.accounts.isEmpty { emptyAccounts }
+                else if controller.showPreviews { previews }
+                else { privateSummary }
             }
-            .frame(maxHeight: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Divider().opacity(0.5)
             HStack(spacing: 8) {
                 Button { controller.openInbox(accountID: summary.selectedAccount?.id) } label: {
@@ -131,19 +145,16 @@ struct MailFloatingView: View {
     }
 
     private var emptyAccounts: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Image(systemName: "envelope.badge").font(.system(size: 22)).foregroundStyle(.indigo)
+        VStack(alignment: .leading, spacing: 6) {
             Text("把邮箱带到桌面").font(.system(size: 13, weight: .semibold))
-            Text("添加邮箱后，在这里查看未读数量和同步状态。学校、工作和生活，各有自己的位置。")
+            Text("添加邮箱后，在这里查看缓存未读数量和同步状态。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("拖动顶部空白可移动，鼠标移出后自动收成竖线。")
-                .font(.system(size: 10)).foregroundStyle(.tertiary)
-        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.indigo.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
     }
 
     private var privateSummary: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 6) {
             Label("邮件预览已隐藏", systemImage: "eye.slash")
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             Text(summary.unreadCount > 0 ? "有 \(summary.unreadCount) 封缓存未读邮件，打开收件箱查看。" : "当前缓存中没有未读邮件。")
@@ -151,13 +162,13 @@ struct MailFloatingView: View {
             Text("在设置的外观页开启邮件预览，可显示最近三封邮件的发件人和主题。")
                 .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if summary.errorCount > 0 || store.problem != nil { checkAccounts }
-        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 11))
     }
 
     @ViewBuilder private var previews: some View {
         if summary.unreadMessages.isEmpty {
-            Label("暂无缓存未读邮件", systemImage: "envelope.open").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 16)
+            Label("暂无缓存未读邮件", systemImage: "envelope.open").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 8)
         } else {
             ForEach(summary.unreadMessages) { message in
                 Button { controller.openInbox(accountID: message.accountID, messageID: message.id) } label: {
@@ -195,4 +206,10 @@ struct MailFloatingView: View {
             else { await store.syncAll() }
         }
     }
+}
+
+/// Read the intrinsic expanded content only; the 104-point edge rail never publishes a card height.
+private struct MailFloatingHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
