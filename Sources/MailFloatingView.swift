@@ -4,11 +4,9 @@ import SwiftUI
 struct MailFloatingView: View {
     @ObservedObject var store: MailStore
     @ObservedObject var controller: MailFloatingController
-    @State private var selectedAccountID: UUID?
-    private static let dragAreaHeight: CGFloat = 18
 
     private var summary: MailFloatingSummary {
-        MailFloatingSummary(library: store.library, messages: store.messages, accountID: selectedAccountID)
+        MailFloatingSummary(library: store.library, messages: store.messages)
     }
     private var syncing: Bool { !store.busy.isDisjoint(with: Set(summary.scopeAccounts.map(\.id))) }
     private var canSync: Bool { summary.enabledCount > 0 && !syncing }
@@ -21,29 +19,25 @@ struct MailFloatingView: View {
                 MailFloatingRailView(controller:controller,unreadCount:all.unreadCount,errorCount:all.errorCount + (store.problem == nil ? 0 : 1))
             }
         }
-        .onChange(of: store.library.accounts.map(\.id)) { _, ids in
-            if let selectedAccountID, !ids.contains(selectedAccountID) { self.selectedAccountID = nil }
-        }
     }
 
     private var card: some View {
         VStack(spacing: 0) {
-            dragArea
+            unreadHeader
             ScrollView(.vertical) {
                 expandedContent
                     .padding(.horizontal, 10)
-                    .padding(.top, 6)
                     .padding(.bottom, 10)
                     .frame(maxWidth: .infinity, alignment: .top)
                     .fixedSize(horizontal: false, vertical: true)
                     .background {
                         GeometryReader { geometry in
-                            Color.clear.preference(key: MailFloatingHeightPreferenceKey.self, value: geometry.size.height + Self.dragAreaHeight)
+                            Color.clear.preference(key: MailFloatingHeightPreferenceKey.self, value: geometry.size.height + MailFloatingController.dragHeaderHeight)
                         }
                     }
             }
             .scrollBounceBehavior(.basedOnSize)
-            .frame(height: max(controller.expandedHeight - Self.dragAreaHeight, 0))
+            .frame(height: max(controller.expandedHeight - MailFloatingController.dragHeaderHeight, 0))
         }
         .frame(maxWidth: .infinity)
         .frame(height: controller.expandedHeight)
@@ -58,54 +52,29 @@ struct MailFloatingView: View {
         }
     }
 
-    private var dragArea: some View {
-        Color.clear.frame(maxWidth: .infinity).frame(height: min(Self.dragAreaHeight, controller.expandedHeight))
-            .overlay(MailFloatingDragHandle().accessibilityHidden(true))
-            .help("拖动顶部空白自由移动悬浮窗，靠近左右边缘时吸附")
-    }
-
-    private var accountPicker: some View {
-        Menu {
-            Button("全部邮箱 · \(MailFloatingSummary(library: store.library, messages: store.messages).unreadCount) 封缓存未读") { selectedAccountID = nil }
-            if !summary.accounts.isEmpty { Divider() }
-            ForEach(summary.accounts) { account in
-                Button("\(account.displayName) · \(summary.unreadCount(for: account.id))") { selectedAccountID = account.id }
+    private var unreadHeader: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(String(summary.unreadCount)).font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("缓存未读 · 收件箱").font(.system(size: 11)).foregroundStyle(.secondary)
             }
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: summary.selectedAccount.map { store.identity($0.identityID)?.symbol ?? "envelope" } ?? "tray.full")
-                    .foregroundStyle(.indigo)
-                Text(summary.selectedAccount?.displayName ?? "全部邮箱").lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            Spacer()
+            VStack(alignment: .trailing, spacing: 7) {
+                statusBadge
+                Text("\(summary.enabledCount) 个启用 · \(summary.registeredCount) 个仅登记")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            .font(.system(size: 11, weight: .medium)).padding(.horizontal, 10).frame(height: 29)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .background(MailFloatingMenuRegion())
-        .accessibilityLabel("切换悬浮窗邮箱")
+        .frame(height: MailFloatingController.dragHeaderHeight - 16)
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity)
+        .help("拖动未读统计区域自由移动悬浮窗，靠近左右边缘时吸附")
     }
 
     private var expandedContent: some View {
         VStack(spacing: 6) {
-            accountPicker
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(String(summary.unreadCount)).font(.system(size: 40, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("缓存未读 · 收件箱").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 7) {
-                    statusBadge
-                    Text("\(summary.enabledCount) 个启用 · \(summary.registeredCount) 个仅登记")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-            }
-            .frame(height: 64)
-            .padding(.horizontal, 4)
-            .background(MailFloatingDragHandle().allowsHitTesting(false).accessibilityHidden(true))
-            .help("拖动未读统计区域自由移动悬浮窗，靠近左右边缘时吸附")
             Divider().opacity(0.5)
             VStack(alignment: .leading, spacing: 6) {
                 if summary.accounts.isEmpty { emptyAccounts }
@@ -115,13 +84,13 @@ struct MailFloatingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Divider().opacity(0.5)
             HStack(spacing: 8) {
-                Button { controller.openInbox(accountID: summary.selectedAccount?.id) } label: {
+                Button { controller.openInbox() } label: {
                     Label(summary.accounts.isEmpty ? "添加邮箱" : "收件箱", systemImage: summary.accounts.isEmpty ? "plus" : "tray")
                 }.buttonStyle(.borderedProminent)
                 Spacer(minLength: 0)
                 Button { sync() } label: { Label("同步", systemImage: "arrow.clockwise") }
-                    .disabled(!canSync).help("同步当前选择的已启用邮箱")
-                Button { controller.compose(accountID: summary.selectedAccount?.id) } label: { Label("写信", systemImage: "square.and.pencil") }
+                    .disabled(!canSync).help("同步所有已启用邮箱")
+                Button { controller.compose() } label: { Label("写信", systemImage: "square.and.pencil") }
             }
             .font(.system(size: 11)).controlSize(.small)
             footer
@@ -143,7 +112,7 @@ struct MailFloatingView: View {
     private var footer: some View {
         HStack {
             TimelineView(.periodic(from: .now, by: 60)) { context in
-                Text(MailFloatingSummary(library: store.library, messages: store.messages, accountID: selectedAccountID, now: context.date).latestSyncLabel)
+                Text(MailFloatingSummary(library: store.library, messages: store.messages, now: context.date).latestSyncLabel)
             }
             Spacer(minLength: 8)
             Text("最近同步范围").help("只统计已缓存的收件箱邮件，并非服务商的完整未读总数")
@@ -199,18 +168,14 @@ struct MailFloatingView: View {
 
     private var checkAccounts: some View {
         Button(store.problem != nil ? "查看操作提示" : "查看邮箱状态") {
-            controller.openInbox(accountID: summary.selectedAccount?.id)
+            controller.openInbox()
             if store.problem == nil { store.route = "accounts" }
         }.font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(.orange)
     }
 
     private func sync() {
         guard canSync else { return }
-        let accountID = summary.selectedAccount?.id
-        Task {
-            if let accountID { await store.sync(accountID) }
-            else { await store.syncAll() }
-        }
+        Task { await store.syncAll() }
     }
 }
 

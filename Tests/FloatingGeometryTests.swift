@@ -95,30 +95,9 @@ extension MailFloatingController {
         evaluate(onePointOutside,3.1); evaluate(onePointOutside,3.19)
         verify(!controller.isExpanded, "one point outside the native card is not expanded by an invisible margin")
         reveal(4)
-        let unrelatedMenu = NSMenu()
-        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:unrelatedMenu))
+        NotificationCenter.default.post(name:NSMenu.didBeginTrackingNotification,object:NSMenu())
         evaluate(outside,4.1); evaluate(outside,4.19)
-        verify(controller.trackingMenus.isEmpty && !controller.isExpanded, "main app and status menus cannot hold the floating card open")
-        reveal(5)
-        let host = panel.contentView!
-        let menuRegion = MailFloatingMenuRegion.MenuRegionView(frame:NSRect(x:10,y:host.bounds.height-55,width:280,height:29))
-        host.addSubview(menuRegion); menuRegion.registerMenuArea()
-        let menuPoint = panel.convertPoint(toScreen:menuRegion.convert(NSPoint(x:40,y:14),to:nil))
-        controller.notePanelMouseDown(event(.leftMouseDown,at:menuPoint))
-        let menu = NSMenu()
-        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:menu))
-        let childMenu = NSMenu()
-        let childItem = NSMenuItem(title:"Test",action:nil,keyEquivalent:"")
-        menu.addItem(childItem); childItem.submenu = childMenu
-        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:childMenu))
-        evaluate(outside,5.1); evaluate(outside,9)
-        let protectedMenu = controller.isExpanded && controller.trackingMenus.count == 2
-        let menuItemEvent = NSEvent.mouseEvent(with:.leftMouseDown,location:outside,modifierFlags:[],timestamp:0,windowNumber:0,context:nil,eventNumber:1,clickCount:1,pressure:1)!
-        let returnedMenuEvent = controller.observeLocalMouseEvent(menuItemEvent)
-        verify(protectedMenu && controller.isExpanded && returnedMenuEvent === menuItemEvent, "only registered picker tracking protects menu-item clicks and returns the original event")
-        controller.menuTrackingEnded(Notification(name:NSMenu.didEndTrackingNotification,object:menu))
-        evaluate(outside,10); evaluate(outside,10.09)
-        verify(!controller.isExpanded && controller.trackingMenus.isEmpty && controller.rootTrackingMenu == nil, "menu ending clears the guard and promptly resumes outside collapse")
+        verify(!controller.isExpanded, "unrelated app menus cannot hold the floating card open after removal of the mailbox picker")
         reveal(11)
         let insideEvent = event(.leftMouseDown,at:NSPoint(x:panel.frame.midX,y:panel.frame.midY))
         let returnedInsideEvent = controller.observeLocalMouseEvent(insideEvent)
@@ -127,23 +106,25 @@ extension MailFloatingController {
         _ = controller.observeLocalMouseEvent(otherEvent)
         verify(otherEvent.window === otherWindow && !controller.isExpanded, "another app window is outside even when its screen coordinate overlaps the card")
         reveal(12)
-        controller.notePanelMouseDown(event(.leftMouseDown,at:panel.convertPoint(toScreen:menuRegion.convert(NSPoint(x:40,y:14),to:nil))))
-        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:menu))
-        controller.observeMouseEvent(menuItemEvent,isGlobal:true)
-        verify(!controller.isExpanded && controller.trackingMenus.isEmpty && controller.pendingMailboxMenuUntil == nil, "other-app mouse-down immediately collapses and clears obsolete menu ownership")
+        let externalEvent = NSEvent.mouseEvent(with:.leftMouseDown,location:outside,modifierFlags:[],timestamp:0,windowNumber:0,context:nil,eventNumber:1,clickCount:1,pressure:1)!
+        controller.observeMouseEvent(externalEvent,isGlobal:true)
+        verify(!controller.isExpanded, "other-app mouse-down immediately collapses the card")
         reveal(12.1)
-        controller.notePanelMouseDown(event(.leftMouseDown,at:panel.convertPoint(toScreen:menuRegion.convert(NSPoint(x:40,y:14),to:nil))))
-        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:menu))
         let cornerEvent = event(.leftMouseDown,at:NSPoint(x:panel.frame.minX+1,y:panel.frame.maxY-1))
         _ = controller.observeLocalMouseEvent(cornerEvent)
-        verify(!controller.isExpanded && controller.trackingMenus.isEmpty, "a card's transparent corner is outside even while its menu has been tracking")
+        verify(!controller.isExpanded, "a card's transparent corner is an outside click")
         reveal(13)
-        let first = MailFloatingDragHandle.DragView(frame:NSRect(x:16,y:host.bounds.height-18,width:80,height:8))
-        let second = MailFloatingDragHandle.DragView(frame:NSRect(x:105,y:host.bounds.height-18,width:55,height:8))
-        host.addSubview(first); host.addSubview(second)
-        first.registerDragArea(); second.registerDragArea()
+        func headerPoint(_ x:CGFloat,_ depth:CGFloat) -> NSPoint { panel.convertPoint(toScreen:NSPoint(x:x,y:panel.frame.height-depth)) }
+        let headerChecks:[(CGFloat,CGFloat,String)] = [(panel.frame.width/2,3,"top white padding"),(2,30,"left white padding"),(panel.frame.width-2,30,"right white padding"),(panel.frame.width/2,80,"80 pt header bottom boundary")]
+        for (x,depth,label) in headerChecks {
+            let point = headerPoint(x,depth)
+            panel.sendEvent(event(.leftMouseDown,at:point))
+            let grabbed = panel.isPressed
+            panel.sendEvent(event(.leftMouseUp,at:point))
+            verify(grabbed && !panel.isPressed, "actual native down/up captures \(label) without any SwiftUI view registration")
+        }
         let initial = panel.frame
-        let firstGlobal = panel.convertPoint(toScreen:first.convert(NSPoint(x:20,y:4),to:nil))
+        let firstGlobal = headerPoint(panel.frame.width/2,3)
         panel.sendEvent(event(.leftMouseDown,at:firstGlobal))
         controller.collapse(); controller.resetPosition(); evaluate(outside,100)
         controller.updateExpandedHeight(392)
@@ -151,7 +132,7 @@ extension MailFloatingController {
         panel.sendEvent(event(.leftMouseUp,at:firstGlobal))
         verify(!panel.isPressed && panel.frame.height == 392 && controller.expandedHeight == 392, "native mouse-up releases the guard and applies requested content height")
         controller.updateExpandedHeight(280)
-        let secondGlobal = panel.convertPoint(toScreen:second.convert(NSPoint(x:15,y:4),to:nil))
+        let secondGlobal = headerPoint(115,42)
         let dragInitial = panel.frame
         panel.sendEvent(event(.leftMouseDown,at:secondGlobal))
         let beforeRatio = defaults.double(forKey:"gaoyoujian.floating.verticalRatio")
@@ -179,25 +160,23 @@ extension MailFloatingController {
             restored.hide(); restoredPanel.delegate = nil; restoredPanel.contentView = nil; restoredPanel.close()
         }
         controller.collapse(pointer:outside,now:base.addingTimeInterval(110)); reveal(111)
-        let controlPoint = panel.convertPoint(toScreen:first.convert(NSPoint(x:20,y:4),to:nil))
-        let businessPoint = panel.convertPoint(toScreen:NSPoint(x:panel.frame.width-16,y:30))
-        let currentMenuPoint = panel.convertPoint(toScreen:menuRegion.convert(NSPoint(x:40,y:14),to:nil))
-        verify(closeFrame(panel.frame,saved) && !panel.isGrabEvent(event(.leftMouseDown,at:controlPoint,modifiers:[.control])) && !panel.isGrabEvent(event(.leftMouseDown,at:businessPoint)) && !panel.isGrabEvent(event(.leftMouseDown,at:currentMenuPoint)) && first.hitTest(NSPoint(x:20,y:4)) == nil, "registered native drag areas stay passive and never capture mailbox/business/control-click regions")
+        let controlPoint = headerPoint(panel.frame.width/2,3)
+        let businessPoint = headerPoint(panel.frame.width/2,81)
+        let topCorner = headerPoint(1,1)
+        verify(closeFrame(panel.frame,saved) && !panel.isGrabEvent(event(.leftMouseDown,at:controlPoint,modifiers:[.control])) && !panel.isGrabEvent(event(.leftMouseDown,at:businessPoint)) && !panel.isGrabEvent(event(.leftMouseDown,at:topCorner)) && !panel.isGrabEvent(event(.rightMouseDown,at:controlPoint)), "fixed native header preserves control/right click, transparent corners and business input just below 80 pt")
         panel.sendEvent(event(.leftMouseDown,at:controlPoint))
-        controller.observeMouseEvent(menuItemEvent,isGlobal:true)
+        controller.observeMouseEvent(externalEvent,isGlobal:true)
         verify(!panel.isPressed && !controller.isExpanded, "fresh external mouse-down clears an old unmatched press before immediate collapse")
         reveal(112)
         panel.sendEvent(event(.leftMouseDown,at:controlPoint))
         controller.observeMouseEvent(event(.leftMouseUp,at:outside,in:otherWindow),isGlobal:false)
         verify(!panel.isPressed && controller.isExpanded, "a release routed to another native window cannot leave drag protection latched")
-        controller.notePanelMouseDown(event(.leftMouseDown,at:panel.convertPoint(toScreen:menuRegion.convert(NSPoint(x:40,y:14),to:nil))))
-        controller.menuTrackingBegan(Notification(name:NSMenu.didBeginTrackingNotification,object:menu))
         let escape = NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:panel.windowNumber,context:nil,characters:"\u{1b}",charactersIgnoringModifiers:"\u{1b}",isARepeat:false,keyCode:53)!
         panel.keyDown(with:escape)
-        verify(!controller.isExpanded && !panel.isPressed && controller.trackingMenus.isEmpty, "Escape clears owned menu state and collapses without disabling the feature")
+        verify(!controller.isExpanded && !panel.isPressed && controller.isVisible, "Escape collapses without disabling the feature")
         reveal(113)
         let nearStart = panel.frame
-        let nearGrabPoint = panel.convertPoint(toScreen:second.convert(NSPoint(x:15,y:4),to:nil))
+        let nearGrabPoint = headerPoint(115,42)
         let nearOffset = NSSize(width:nearGrabPoint.x-nearStart.minX,height:nearGrabPoint.y-nearStart.minY)
         panel.sendEvent(event(.leftMouseDown,at:nearGrabPoint))
         let nearLeft = NSPoint(x:screen.visibleFrame.minX+20+nearOffset.width,y:screen.visibleFrame.minY+100+nearOffset.height)
@@ -244,7 +223,7 @@ extension MailFloatingController {
         controller.resetPosition()
         verify(controller.dockMode == .right && controller.horizontalRatio == 1 && controller.verticalRatio == 0.15 && defaults.object(forKey:"gaoyoujian.floating.dockMode") == nil && defaults.object(forKey:"gaoyoujian.floating.horizontalRatio") == nil && defaults.bool(forKey:"gaoyoujian.floating.pinned"), "reset clears new position keys while retaining unrelated legacy settings")
         controller.hide()
-        verify(controller.eventMonitors.isEmpty && controller.pointerTimer == nil && controller.trackingMenus.isEmpty && !controller.isVisible, "disable removes observers, timer and stale menu protection")
+        verify(controller.eventMonitors.isEmpty && controller.pointerTimer == nil && !controller.isVisible, "disable removes observers and timer")
         controller.show()
         verify(!panel.isVisible && !controller.isExpanded && panel.frame.size == railHitSize && controller.eventMonitors.count == monitorCount, "hidden re-enable starts rail without subscribing to user events")
     }
@@ -254,6 +233,7 @@ extension MailFloatingController {
     static func main() {
         var checks = 0
         func check(_ value: Bool, _ name: String) { precondition(value, name); checks += 1 }
+        check(MailFloatingController.dragHeaderHeight == 80, "native and visible fixed header share 80 pt")
         check(MailFloatingController.railHitSize == NSSize(width:20,height:104), "actual hidden hit size")
         check(MailFloatingController.railVisualSize == NSSize(width:6,height:88), "visual hidden size")
         let screens = [NSRect(x:0,y:0,width:1440,height:900),NSRect(x:-1920,y:-1080,width:1920,height:1080),NSRect(x:100,y:300,width:320,height:220),NSRect(x:0,y:0,width:20,height:60)]

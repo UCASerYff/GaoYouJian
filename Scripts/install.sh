@@ -1,6 +1,9 @@
 #!/bin/zsh
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ $# -gt 0 ]]; then
+  [[ $# == 1 && "$1" == '--defer-cleanup' ]] || { print -u2 '用法：install.sh [--defer-cleanup]'; exit 1; }
+fi
 APP_VERSION="$(tr -d '\n' < "$PROJECT_DIR/VERSION")"
 [[ "$APP_VERSION" =~ '^[0-9]+\.[0-9]{2}$' ]] || { print -u2 '无效的版本号'; exit 1; }
 PACKAGE="$PROJECT_DIR/Release/GaoYouJian-$APP_VERSION.dmg"
@@ -77,10 +80,7 @@ open "$DESTINATION"
 sleep 3
 if ! pgrep -f "^$EXECUTABLE([[:space:]]|$)" >/dev/null; then print -u2 '新版未正常启动'; exit 1; fi
 COMMITTED=true
-if [[ -e "$OLD_APP" ]] && validate "$OLD_APP"; then rm -rf "$OLD_APP"; fi
-# Deliberately restrict cleanup to this project's own historical installers.
-for PREVIOUS in "$PROJECT_DIR"/Release/GaoYouJian-*.dmg(N) "$PROJECT_DIR"/Release/GaoYouJian-*.dmg.sha256(N); do
-  if [[ "$PREVIOUS" != "$PACKAGE" && "$PREVIOUS" != "$PACKAGE.sha256" && -f "$PREVIOUS" && ! -L "$PREVIOUS" ]]; then rm -f "$PREVIOUS"; fi
-done
-print "已安装搞邮件 V$APP_VERSION；已清理旧程序和历史安装包。"
-print '邮箱、身份、关联平台、邮件缓存、草稿及钥匙串凭据均保留。'
+# A successful launch alone is not business/data acceptance. Retain rollback files until that review.
+print "已安装并启动搞邮件 V$APP_VERSION；保留上一版程序和安装包，等待业务及数据验收。"
+if [[ -e "$OLD_APP" ]]; then print "ROLLBACK_APP=$OLD_APP"; fi
+print '验收通过后再精确清理上述旧程序及本项目旧安装包，保留安全数据备份。'
