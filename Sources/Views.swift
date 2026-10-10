@@ -41,6 +41,8 @@ struct RootView: View {
     @State private var accountSheet = false
     @State private var platformSheet = false
     @State private var identitySheet = false
+    @State private var aliasSheet = false
+    @State private var selectedAliasAccountID: UUID?
     @State private var editingAccount: MailAccount?
     @State private var editingPlatform: PlatformRecord?
     @State private var editingIdentity: MailIdentity?
@@ -77,6 +79,10 @@ struct RootView: View {
             sidebarHidden = false
             DispatchQueue.main.async {searchFocused = true}
         }
+        .onReceive(NotificationCenter.default.publisher(for:.mailOpenAliasHelper)) {_ in
+            selectedAliasAccountID = store.mailboxFilter
+            aliasSheet = true
+        }
         .onReceive(NotificationCenter.default.publisher(for:NSWindow.didBecomeKeyNotification)) {note in
             guard let window = note.object as? NSWindow else {return}
             mainWindowActive = window.identifier?.rawValue == "main"
@@ -89,6 +95,7 @@ struct RootView: View {
         .sheet(isPresented:$accountSheet) { AccountEditor(store:store,account:editingAccount) }
         .sheet(isPresented:$platformSheet) { PlatformEditor(store:store,record:editingPlatform) }
         .sheet(isPresented:$identitySheet) { IdentityEditor(store:store,identity:editingIdentity) }
+        .sheet(isPresented:$aliasSheet) { AliasHelperView(store:store,initialAccountID:selectedAliasAccountID,onRegisterPlatform:{ name, addr, accID in editingPlatform = PlatformRecord(accountID:accID,name:name,address:addr); platformSheet = true }) }
         .sheet(item:$store.compose) { draft in ComposerView(store:store,initial:draft) }.interactiveDismissDisabled(store.sending)
         .alert("操作提示",isPresented:Binding(get:{store.problem != nil && mainWindowActive},set:{if !$0 && mainWindowActive {store.problem = nil}})) { Button("知道了",role:.cancel) {store.problem = nil} } message: {Text(store.problem ?? "")}
         .confirmationDialog("移除这个邮箱？",isPresented:Binding(get:{pendingAccountDelete != nil},set:{if !$0 {pendingAccountDelete = nil}}),titleVisibility:.visible) {
@@ -194,7 +201,9 @@ struct RootView: View {
                 Button("添加邮箱",systemImage:"envelope.badge") {editingAccount = nil; accountSheet = true}
                 Button("登记平台",systemImage:"link") {editingPlatform = PlatformRecord(accountID:store.mailboxFilter); platformSheet = true}
                 Button("添加身份",systemImage:"person.crop.circle.badge.plus") {editingIdentity = nil; identitySheet = true}
-            } label:{Label("添加",systemImage:"plus")}.help("添加邮箱、平台或身份")
+                Divider()
+                Button("邮箱别名助手…",systemImage:"sparkles.rectangle.stack") {selectedAliasAccountID = store.mailboxFilter; aliasSheet = true}
+            } label:{Label("添加",systemImage:"plus")}.help("添加邮箱、平台、身份或生成别名")
         }.labelStyle(.iconOnly).frame(width:360,alignment:.trailing)
     }
     private var footer: some View {
@@ -274,7 +283,7 @@ struct RootView: View {
                     IdentityBadge(identity:store.identity(a.identityID)); Spacer()
                     Text(a.enabled ? (a.syncError == nil ? (a.lastSync == nil ? "待验证" : "已连接") : "需要处理") : "仅登记").font(.system(size:11,weight:.medium)).foregroundStyle(a.syncError == nil ? Color.secondary : .orange)
                     Button("编辑") {editingAccount = a; accountSheet = true}
-                    Menu { Button("查看关联平台") {store.route = "platforms"; store.mailboxFilter = a.id; store.search = ""}; if a.auth != "password" {Button("重新授权") {Task {do {try await store.authorize(a); await store.sync(a.id)} catch {store.publish(error)}}}}; Divider(); Button("移除邮箱",role:.destructive) {pendingAccountDelete = a} } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).frame(width:23)
+                    Menu { Button("查看关联平台") {store.route = "platforms"; store.mailboxFilter = a.id; store.search = ""}; Button("别名助手") {selectedAliasAccountID = a.id; aliasSheet = true}; if a.auth != "password" {Button("重新授权") {Task {do {try await store.authorize(a); await store.sync(a.id)} catch {store.publish(error)}}}}; Divider(); Button("移除邮箱",role:.destructive) {pendingAccountDelete = a} } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).frame(width:23)
                 }
                 if let error = a.syncError {Text(error).font(.system(size:11)).foregroundStyle(.orange).lineLimit(3)}
                 HStack(spacing:16) {
@@ -343,7 +352,19 @@ struct InboxView: View {
                                 HStack(spacing:6) {Circle().fill(m.isRead ? Color.clear : .indigo).frame(width:6,height:6); Text(m.from.isEmpty ? "未知发件人" : m.from).font(.system(size:12,weight:m.isRead ? .regular : .semibold)).lineLimit(1); Spacer(); if m.isFlagged {Image(systemName:"star.fill").font(.system(size:10)).foregroundStyle(.orange)}; Text(m.date.formatted(date:.numeric,time:.omitted)).font(.system(size:9)).foregroundStyle(.secondary)}
                                 Text(m.subject.isEmpty ? "（无主题）" : m.subject).font(.system(size:13,weight:.medium)).lineLimit(2)
                                 Text(m.preview.isEmpty ? store.account(m.accountID)?.email ?? "" : m.preview).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(2)
-                                IdentityBadge(identity:store.identity(store.account(m.accountID)?.identityID))
+                                HStack {
+                                    IdentityBadge(identity:store.identity(store.account(m.accountID)?.identityID))
+                                    if let code = CodeExtractor.primaryCode(subject: m.subject, body: m.body, html: m.html), code.type != .link {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "key.fill").font(.system(size: 8))
+                                            Text(code.value).font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        }
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .foregroundStyle(Color.indigo)
+                                        .background(Color.indigo.opacity(0.10), in: Capsule())
+                                        .help("提取到验证码 \(code.value)")
+                                    }
+                                }
                             }.padding(.vertical,10).tag(m.id)
                         }}.listStyle(.inset).scrollContentBackground(.hidden) }
                     }.frame(minWidth:260,idealWidth:310,maxWidth:380)
@@ -380,6 +401,10 @@ struct InboxView: View {
                     HStack(alignment:.top) {VStack(alignment:.leading,spacing:5) {Text("发件人：" + m.from); Text("收件人：" + m.to); if !m.cc.isEmpty {Text("抄送：" + m.cc)}}.font(.system(size:11)).foregroundStyle(.secondary).textSelection(.enabled); Spacer(); IdentityBadge(identity:store.identity(store.account(m.accountID)?.identityID))}
                     Text(m.date.formatted(date:.long,time:.shortened)).font(.system(size:10)).foregroundStyle(.tertiary)
                     Divider()
+                    let extracted = CodeExtractor.extract(subject: m.subject, body: m.body, html: m.html)
+                    if let primary = extracted.first {
+                        codeBanner(primary)
+                    }
                     if store.detailBusy.contains(m.id) {ProgressView("正在读取邮件…").font(.system(size:12)).padding(.vertical,20)}
                     if m.loaded {
                         if m.html != nil {Toggle("查看邮件排版（外部图片已阻止）",isOn:$showHTML).font(.system(size:10)).toggleStyle(.checkbox)}
@@ -390,6 +415,46 @@ struct InboxView: View {
                 }.padding(24)
             }
         }.background(Color(nsColor:.textBackgroundColor))
+    }
+    private func codeBanner(_ item: ExtractedCode) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: item.isLink ? "link.badge.plus" : "key.radiowaves.forward.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(Color.indigo)
+                .frame(width: 42, height: 42)
+                .background(Color.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(item.displayTitle).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color.indigo)
+                    Text("置信度 \(Int(item.confidence * 100))%").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if item.isLink {
+                    Text(item.value).font(.system(size: 11)).lineLimit(1).foregroundStyle(.secondary)
+                } else {
+                    Text(item.value).font(.system(size: 22, weight: .bold, design: .monospaced)).textSelection(.enabled)
+                }
+            }
+            Spacer()
+            if item.isLink {
+                Button("打开验证链接") {
+                    if let u = URL(string: item.value) { NSWorkspace.shared.open(u) }
+                }.buttonStyle(.borderedProminent).controlSize(.small)
+                Button("复制链接") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.value, forType: .string)
+                    store.notice = "已复制验证链接"
+                }.controlSize(.small)
+            } else {
+                Button("复制验证码") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.value, forType: .string)
+                    store.notice = "已复制验证码：\(item.value)"
+                }.buttonStyle(.borderedProminent).controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(Color.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.indigo.opacity(0.18), lineWidth: 1))
     }
     private func saveAttachment(_ a: CachedAttachment) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = URL(fileURLWithPath:a.filename).lastPathComponent

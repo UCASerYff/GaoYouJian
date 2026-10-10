@@ -1,12 +1,12 @@
 # 搞邮件
 
-原生 macOS 邮箱客户端，当前正式版本 V1.08。要求 Apple Silicon、macOS 14+。
+原生 macOS 邮箱客户端，当前正式版本 V1.09。要求 Apple Silicon、macOS 14+。
 
-功能包括 IMAP / SMTP 收发、Google / Microsoft OAuth、邮箱身份分类、手动关联网站与 App、历史记录、附件、草稿、资料备份和 CSV 导入导出。没有内置真实账户或共享 OAuth 客户端身份。
+功能包括 IMAP / SMTP 收发、Google / Microsoft OAuth、邮箱身份分类、手动关联网站与 App、历史记录、附件、草稿、资料备份和 CSV 导入导出。V1.09 引入智能验证码与操作链接提取（列表胶囊、详情横幅及悬浮窗一键复制）、邮箱别名助手与服务专用子地址生成器（Gmail 点号/加号/镜像域及通用 Plus-addressing），支持一键登记关联平台。没有内置真实账户或共享 OAuth 客户端身份。
 
 [下载安装包](https://github.com/UCASerYff/GaoYouJian/releases/latest) · [源代码](https://github.com/UCASerYff/GaoYouJian)
 
-原生悬浮窗统一显示所有账号的缓存未读数、可选最近三封未读预览，以及收件箱 / 同步 / 写信入口。V1.08 移除“全部邮箱”选择栏及独立空白顶部，卡片直接从未读统计开始。顶部固定 80 pt 的统计区整块可原生拖动，不随下面的正文滚动；点击单封预览仍会定位其所属账号和邮件。
+原生悬浮窗统一显示所有账号的缓存未读数、可选最近三封未读预览（检测到验证码时支持一键秒复制），以及收件箱 / 同步 / 写信入口。V1.08 移除“全部邮箱”选择栏及独立空白顶部，卡片直接从未读统计开始。顶部固定 80 pt 的统计区整块可原生拖动，不随下面的正文滚动；点击单封预览仍会定位其所属账号和邮件。
 
 平时只显示淡紫色竖线，鼠标移入展开，移出快速收起，点击其他位置立即收起。拖动统计区或隐藏竖线可自由移动，靠近左右屏幕侧边 32 pt 内才自动吸附，松手保存位置。自由位置收起后，竖线仍留在原位置；再次展开和重启沿用记录。统计区下面保留预览、状态和业务按钮，长内容或小屏幕可滚动，卡片高度随内容调整。
 
@@ -39,6 +39,8 @@
 ## 本地测试
 
 ```sh
+./Tests/run_code_extractor_tests.sh
+./Tests/run_alias_tests.sh
 ./Tests/run_transport_tests.sh
 ./Tests/run_model_tests.sh
 ./Tests/run_oauth_tests.sh

@@ -4,6 +4,7 @@ extension Notification.Name {
     static let mailToggleSidebar = Notification.Name("GaoYouJian.toggleSidebar")
     static let mailFocusSearch = Notification.Name("GaoYouJian.focusSearch")
     static let mailSettingsTab = Notification.Name("GaoYouJian.settingsTab")
+    static let mailOpenAliasHelper = Notification.Name("GaoYouJian.openAliasHelper")
 }
 
 struct MailSidebarRow: View {

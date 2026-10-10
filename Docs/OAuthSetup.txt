@@ -1,4 +1,4 @@
-搞邮件 V1.08：Gmail / Microsoft OAuth 配置
+搞邮件 V1.09：Gmail / Microsoft OAuth 配置
 
 本应用提供浏览器授权、PKCE、安全回调、身份验证和令牌自动刷新，但没有附带 Google / Microsoft 注册客户端 ID。要使用 OAuth，请由你或组织管理员为搞邮件注册应用，然后在应用设置中填写对应 ID。不能使用其他客户端的 ID 冒充其身份。填写客户端 ID 不等于已连接邮箱，仍须完成授权并测试收发。
 

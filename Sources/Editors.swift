@@ -41,6 +41,7 @@ private struct MailEditorFeedback: View {
     @State private var success: String?
     @State private var testing = false
     @State private var authorizing = false
+    @State private var aliasSheet = false
     @State private var authorizationTask: Task<Void, Never>?
     @State private var authorizationID: UUID?
     private let wasExisting: Bool
@@ -76,7 +77,12 @@ private struct MailEditorFeedback: View {
                         }
                     }
                     TextField("附加标签", text: $value.tags, prompt: Text("科研、投稿、海外服务"))
-                    TextField("邮箱别名", text: $value.aliases, prompt: Text("多个地址使用逗号分隔"))
+                    HStack {
+                        TextField("邮箱别名", text: $value.aliases, prompt: Text("多个地址使用逗号分隔"))
+                        Button("别名助手") {
+                            aliasSheet = true
+                        }.font(.caption).buttonStyle(.link).disabled(value.email.isEmpty)
+                    }
                     Text("别名应为服务商已经允许此账号使用的发件地址。").font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
@@ -111,6 +117,7 @@ private struct MailEditorFeedback: View {
                 Button("保存邮箱") { saveAndClose() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).disabled(working)
             }.padding(18)
         }.frame(width: 760, height: 730).interactiveDismissDisabled(testing)
+            .sheet(isPresented: $aliasSheet) { AliasHelperView(store: store, initialAccountID: value.id) }
             .onDisappear { if authorizing { cancelAuthorization() } }
     }
     private var authenticationSection: some View {
@@ -296,7 +303,15 @@ private func editorColor(_ value: String) -> Color {
                     }.onChange(of: value.accountID) { previous, current in
                         if value.address.isEmpty || value.address == store.account(previous)?.email { value.address = store.account(current)?.email ?? "" }
                     }
-                    TextField("实际关联地址", text: $value.address, prompt: Text("可填写邮箱别名或保留原地址"))
+                    HStack {
+                        TextField("实际关联地址", text: $value.address, prompt: Text("可填写邮箱别名或保留原地址"))
+                        if let acc = store.account(value.accountID) {
+                            Button("生成平台专属别名") {
+                                let alias = AliasGenerator.makeServiceAlias(email: acc.email, service: value.name.isEmpty ? (value.url.isEmpty ? "service" : value.url) : value.name)
+                                value.address = alias
+                            }.font(.caption).buttonStyle(.link).help("根据当前平台名称为所选邮箱生成加号子地址专属别名")
+                        }
+                    }
                     editableChoice("登录方式", text: $value.loginMethod, choices: ["邮箱登录", "Google 登录", "Apple 登录", "Microsoft 登录", "手机号登录", "其他"])
                     HStack {
                         Text("关联用途")
@@ -525,6 +540,226 @@ private func editorColor(_ value: String) -> Color {
         Task { @MainActor in
             do { try await store.send(draft); finished = true; dismiss() }
             catch { self.error = error.localizedDescription; persistDraft() }
+        }
+    }
+}
+
+@MainActor struct AliasHelperView: View {
+    @ObservedObject var store: MailStore
+    var initialAccountID: UUID? = nil
+    var onRegisterPlatform: ((String, String, UUID?) -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var selectedAccountID: UUID?
+    @State private var serviceName: String = ""
+    @State private var customTag: String = ""
+    @State private var options = AliasRuleOptions(useDots: true, usePlus: true, useGooglemailDomain: false)
+    @State private var batchCount: Int = 20
+    @State private var generatedAliases: [String] = []
+    @State private var notice: String?
+    @State private var copiedItem: String?
+
+    init(store: MailStore, initialAccountID: UUID? = nil, onRegisterPlatform: ((String, String, UUID?) -> Void)? = nil) {
+        self.store = store
+        self.initialAccountID = initialAccountID
+        self.onRegisterPlatform = onRegisterPlatform
+        let initID = initialAccountID ?? store.mailboxFilter ?? store.library.accounts.first?.id
+        _selectedAccountID = State(initialValue: initID)
+    }
+
+    private var currentAccount: MailAccount? {
+        store.account(selectedAccountID) ?? store.library.accounts.first
+    }
+
+    private var isGmail: Bool {
+        guard let acc = currentAccount else { return false }
+        let d = acc.email.lowercased()
+        return d.hasSuffix("@gmail.com") || d.hasSuffix("@googlemail.com") || acc.provider == .gmail
+    }
+
+    private var serviceAlias: String {
+        guard let acc = currentAccount else { return "" }
+        let tag = serviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AliasGenerator.makeServiceAlias(email: acc.email, service: tag.isEmpty ? "service" : tag)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MailEditorHeader(
+                title: "邮箱别名助手",
+                subtitle: "基于服务商规则与子地址（Plus-addressing）生成专属别名，全部进同一收件箱。",
+                symbol: "sparkles.rectangle.stack"
+            )
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    // Account Picker
+                    HStack(spacing: 12) {
+                        Text("当前邮箱:").font(.system(size: 13, weight: .medium))
+                        Picker("", selection: $selectedAccountID) {
+                            ForEach(store.library.accounts) { acc in
+                                Text("\(acc.displayName) (\(acc.email))").tag(Optional(acc.id))
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 320)
+                        Spacer()
+                    }
+
+                    if let acc = currentAccount {
+                        // Section 1: Service dedicated alias
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("1. 目标平台 / 服务专用别名").font(.system(size: 14, weight: .semibold))
+                            Text("为某个网站（如 GitHub、Twitter、Steam）生成专属邮箱，平台发来的验证码与邮件仍会进原邮箱收件箱。")
+                                .font(.caption).foregroundStyle(.secondary)
+
+                            HStack(spacing: 10) {
+                                TextField("输入平台名称或网址，如 github.com 或 steam", text: $serviceName)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            HStack(spacing: 12) {
+                                Text(serviceAlias)
+                                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+
+                                Button(copiedItem == serviceAlias ? "已复制" : "复制别名") {
+                                    copyText(serviceAlias)
+                                }
+                                .controlSize(.small)
+
+                                Button("追加为此邮箱别名") {
+                                    appendAliasToAccount(serviceAlias, account: acc)
+                                }
+                                .controlSize(.small)
+
+                                if onRegisterPlatform != nil {
+                                    Button("一键登记为关联平台") {
+                                        dismiss()
+                                        onRegisterPlatform?(serviceName.isEmpty ? "新平台" : serviceName, serviceAlias, acc.id)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+
+                        // Section 2: Batch Generation Rules
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("2. 批量别名生成器").font(.system(size: 14, weight: .semibold))
+                                Spacer()
+                                if isGmail {
+                                    Text("检测到 Gmail 格式，支持点号与镜像域").font(.caption).foregroundStyle(.indigo)
+                                } else {
+                                    Text("通用邮箱采用标准 + 标签子地址规则").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+
+                            HStack(spacing: 16) {
+                                if isGmail {
+                                    Toggle("点号打点 (Dot Trick)", isOn: $options.useDots)
+                                    Toggle("加号后缀 (+ Suffix)", isOn: $options.usePlus)
+                                    Toggle("googlemail.com 镜像域", isOn: $options.useGooglemailDomain)
+                                } else {
+                                    Toggle("启用加号子地址 (+ Tag)", isOn: $options.usePlus)
+                                }
+                            }.font(.callout)
+
+                            HStack(spacing: 12) {
+                                Button("立即批量生成") {
+                                    generateBatch(for: acc)
+                                }.buttonStyle(.borderedProminent).controlSize(.small)
+
+                                if !generatedAliases.isEmpty {
+                                    Button("一键复制全部 (\(generatedAliases.count))") {
+                                        copyText(generatedAliases.joined(separator: "\n"))
+                                        notice = "已复制全部 \(generatedAliases.count) 个别名"
+                                    }.controlSize(.small)
+                                }
+                            }
+
+                            if !generatedAliases.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(generatedAliases, id: \.self) { item in
+                                        HStack {
+                                            Text(item).font(.system(size: 12, design: .monospaced))
+                                            Spacer()
+                                            Button(copiedItem == item ? "已复制" : "复制") {
+                                                copyText(item)
+                                            }.font(.caption).buttonStyle(.borderless)
+                                        }
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+                                    }
+                                }
+                                .frame(maxHeight: 220)
+                            }
+                        }
+                        .padding(14)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                    } else {
+                        Text("请先在邮箱管理中添加至少一个邮箱账户。").foregroundStyle(.secondary)
+                    }
+
+                    if let msg = notice {
+                        Label(msg, systemImage: "checkmark.circle.fill")
+                            .font(.callout).foregroundStyle(.green)
+                    }
+                }.padding(22)
+            }
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("关闭") { dismiss() }.buttonStyle(.borderedProminent).controlSize(.regular)
+            }.padding(16)
+        }
+        .frame(width: 680, height: 620)
+        .onAppear {
+            if let acc = currentAccount {
+                generateBatch(for: acc)
+            }
+        }
+    }
+
+    private func generateBatch(for acc: MailAccount) {
+        generatedAliases = AliasGenerator.generate(email: acc.email, count: batchCount, options: options)
+    }
+
+    private func copyText(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copiedItem = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if copiedItem == text { copiedItem = nil }
+        }
+    }
+
+    private func appendAliasToAccount(_ alias: String, account: MailAccount) {
+        var updated = account
+        var currentAliases = updated.aliases.components(separatedBy: CharacterSet(charactersIn: ",;\n，；"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if !currentAliases.contains(alias) {
+            currentAliases.append(alias)
+            updated.aliases = currentAliases.joined(separator: ", ")
+            do {
+                try store.saveAccount(updated, password: nil)
+                notice = "已将 \(alias) 保存到邮箱 \(account.displayName) 的别名列表中！"
+            } catch {
+                notice = "保存失败：\(error.localizedDescription)"
+            }
+        } else {
+            notice = "此别名已经在该邮箱列表中。"
         }
     }
 }

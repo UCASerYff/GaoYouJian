@@ -58,6 +58,7 @@ import SwiftUI
                 Button("同步所有邮箱") {Task {await store.syncAll()}}.keyboardShortcut("r")
                     .disabled(!store.busy.isEmpty || !store.library.accounts.contains(where:{$0.enabled}))
                 Button("搜索") {showMain(); DispatchQueue.main.async {NotificationCenter.default.post(name:.mailFocusSearch,object:nil)}}.keyboardShortcut("f")
+                Button("邮箱别名助手…") {showMain(); DispatchQueue.main.async {NotificationCenter.default.post(name:.mailOpenAliasHelper,object:nil)}}.keyboardShortcut("a",modifiers:[.command,.option])
             }
             CommandGroup(after:.toolbar) {
                 Button("显示 / 隐藏侧边栏") {showMain(); DispatchQueue.main.async {NotificationCenter.default.post(name:.mailToggleSidebar,object:nil)}}

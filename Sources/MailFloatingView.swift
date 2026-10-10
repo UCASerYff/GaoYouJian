@@ -4,6 +4,7 @@ import SwiftUI
 struct MailFloatingView: View {
     @ObservedObject var store: MailStore
     @ObservedObject var controller: MailFloatingController
+    @State private var copiedCode: String?
 
     private var summary: MailFloatingSummary {
         MailFloatingSummary(library: store.library, messages: store.messages)
@@ -156,6 +157,30 @@ struct MailFloatingView: View {
                                 Text(message.date.formatted(date: .omitted, time: .shortened)).font(.system(size: 9)).foregroundStyle(.secondary)
                             }
                             Text(message.subject.isEmpty ? "（无主题）" : message.subject).font(.system(size: 12, weight: .medium)).lineLimit(2)
+                            if let code = CodeExtractor.primaryCode(subject: message.subject, body: message.body, html: message.html), code.type != .link {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "key.fill").font(.system(size: 9)).foregroundStyle(Color.indigo)
+                                    Text(code.value).font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    Spacer()
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(code.value, forType: .string)
+                                        copiedCode = code.value
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                            if copiedCode == code.value { copiedCode = nil }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: copiedCode == code.value ? "checkmark" : "doc.on.doc").font(.system(size: 8))
+                                            Text(copiedCode == code.value ? "已复制" : "复制").font(.system(size: 9))
+                                        }
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(Color.indigo.opacity(0.12), in: Capsule())
+                                    }.buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(Color.indigo.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            }
                             Text(store.account(message.accountID)?.displayName ?? "").font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }.padding(9).frame(maxWidth: .infinity, alignment: .leading)
